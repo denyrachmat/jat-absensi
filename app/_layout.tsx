@@ -1,3 +1,4 @@
+import { ToastBridge } from "@/components/ToastBridge";
 import {
   DarkTheme,
   DefaultTheme,
@@ -14,6 +15,8 @@ import { useColorScheme } from "@/hooks/use-color-scheme";
 import { GluestackUIProvider } from "@/components/ui/gluestack-ui-provider";
 import "@/global.css";
 
+import DialogBridge from "@/components/DialogBridge";
+
 // export const unstable_settings = {
 //   anchor: "(auth)",
 // };
@@ -24,6 +27,7 @@ export default function RootLayout() {
   return (
     <GluestackUIProvider mode="dark">
       <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
+        <ToastBridge />
         <Stack>
           <Stack.Screen
             name="(auth)"
@@ -39,6 +43,7 @@ export default function RootLayout() {
         </Stack>
         <StatusBar style="auto" />
       </ThemeProvider>
+      <DialogBridge />
     </GluestackUIProvider>
   );
 }
