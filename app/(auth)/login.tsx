@@ -37,10 +37,14 @@ export default function Login() {
       const token = await registerForPushNotificationsAsync();
       if (token) setFcmToken(token);
     }
-    initNotification();
 
-    checkLoginStatus();
+    getCompanyData();
+    initNotification();
   }, []);
+
+  React.useEffect(() => {
+    checkLoginStatus();
+  }, [fcmToken]);
 
   const handleSubmit = async () => {
     if (Password.length < 6) {
@@ -94,10 +98,20 @@ export default function Login() {
     }
   };
 
+  const getCompanyData = async () => {
+    try {
+      const response = await api.get('/company');
+      AsyncStorage.setItem('company', JSON.stringify(response.data.data));
+      console.log("Company data:", response.data);
+    } catch (error) {
+      const err = error as any;
+      console.error("Failed to fetch company data:", err.response || err.message);
+    }
+  }
+
   const checkLoginStatus = async () => {
     setIsLoading(true);
     try {
-      setIsLoading(true);
       const token = await AsyncStorage.getItem('user_token');
       if (token) {
         api.post('/auth/check-login-expiring', {
@@ -136,7 +150,8 @@ export default function Login() {
     } catch (error) {
       console.error("Error checking login status:", error);
       setIsLoading(false);
-    } finally { 
+    } finally {
+      console.log("Finished checking login status");
       setIsLoading(false);
     }
   }
@@ -169,7 +184,7 @@ export default function Login() {
                 Username
               </FormControlLabelText>
             </FormControlLabel>
-            <Input className="my-1 bg-white" size="md">
+            <Input className="my-1 bg-white" size="md" isDisabled={isLoading}>
               <InputField
                 type="text"
                 value={Username}
@@ -182,7 +197,7 @@ export default function Login() {
                 Password
               </FormControlLabelText>
             </FormControlLabel>
-            <Input className="my-1 bg-white" size="md">
+            <Input className="my-1 bg-white" size="md" isDisabled={isLoading}>
               <InputField
                 type="password"
                 value={Password}

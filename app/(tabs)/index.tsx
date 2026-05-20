@@ -1,6 +1,6 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useState } from 'react';
-import { StyleSheet, TouchableOpacity, View } from 'react-native';
+import { Image, ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native';
 
 import { Avatar, AvatarBadge, AvatarFallbackText } from '@/components/ui/avatar';
 import { Button, ButtonIcon, ButtonText } from '@/components/ui/button';
@@ -9,15 +9,16 @@ import { HStack } from '@/components/ui/hstack';
 import { Text } from '@/components/ui/text';
 import { VStack } from '@/components/ui/vstack';
 
-import { ClockCheck, Compass, Timer, TimerOff } from 'lucide-react-native';
+import { Camera, ClockCheck, Compass, TimerOff } from 'lucide-react-native';
 
 import { useNotifyStore } from '@/store/useNotifyStore';
 import * as Location from 'expo-location';
-import MapView, { Marker, UrlTile } from 'react-native-maps';
+import MapView, { Circle, Marker, UrlTile } from 'react-native-maps';
 // import AsyncStorage from '@react-native-async-storage/async-storage';
 import { api } from '@/services/api';
 import { TimerHelper } from '@/services/timerServices';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Localization from 'expo-localization';
 
 interface Employee {
   full_name?: string;
@@ -32,7 +33,9 @@ export default function HomeScreen() {
   const [cooldown, setCooldown] = useState(0);
   const [loading, setLoading] = useState(true);
   const [employee, setEmployee] = useState<Employee>({});
-  const [photo, setPhoto] = useState<string | null>(null);
+  const [company, setCompany] = useState<any>({});
+  const [photo, setPhoto] = useState<Array<string> | null>([]);
+  const [listSetupLocations, setListSetupLocations] = useState<any[]>([]);
 
   const mapRef = React.useRef<MapView>(null);
   const router = useRouter();
@@ -44,7 +47,11 @@ export default function HomeScreen() {
     getInitialLocation();
     getEmployeeData();
     fetchCurrentLocation()
-    syncTimer()
+    getListLocations();
+
+    AsyncStorage.getItem('company').then(data => {
+      setCompany(JSON.parse(data || '{}'));
+    });
   }, []);
 
   React.useEffect(() => {
@@ -65,15 +72,21 @@ export default function HomeScreen() {
 
   React.useEffect(() => {
     if (params?.photoUri) {
-      setPhoto(params.photoUri as string); // Simpan hasil jepretan modal ke state lokal absen
+      setPhoto(prev => [...(prev || []), params.photoUri as string]);
     }
   }, [params?.photoUri]);
 
   React.useEffect(() => {
-    if (photo && location) {
-      handleClockIn(); // Langsung trigger proses Clock In setelah dapat URI foto dari modal kamera
-    }
-  }, [photo, location]);
+    syncTimer()
+  }, [company]);
+
+  // Koordinat default (Jakarta) jika lokasi gagal dimuat
+  const initialRegion = {
+    latitude: location?.coords.latitude || -6.2088,
+    longitude: location?.coords.longitude || 106.8456,
+    latitudeDelta: 0.005, // Mengatur tingkat zoom peta
+    longitudeDelta: 0.005,
+  };
 
   const getEmployeeData = async () => {
     try {
@@ -87,12 +100,12 @@ export default function HomeScreen() {
     }
   };
 
-  // Koordinat default (Jakarta) jika lokasi gagal dimuat
-  const initialRegion = {
-    latitude: location?.coords.latitude || -6.2088,
-    longitude: location?.coords.longitude || 106.8456,
-    latitudeDelta: 0.005, // Mengatur tingkat zoom peta
-    longitudeDelta: 0.005,
+  const getDeviceTimezone = () => {
+    // Mengambil timezone aktif di HP gawai saat ini
+    const tz = Localization.getCalendars()[0].timeZone;
+
+    console.log("Timezone via Expo:", tz); // Output: "Asia/Jakarta"
+    return tz;
   };
 
   const fetchCurrentLocation = async (quiet = false) => {
@@ -153,12 +166,21 @@ export default function HomeScreen() {
     try {
       // 1. Cek status resmi ke Laravel Herd terlebih dahulu
       const response = await api.get('/attendances/today-presence');
-      const { remaining_cooldown_seconds } = response.data.data;
+      const remaining_cooldown_seconds = response.data.data;
 
-      if (remaining_cooldown_seconds > 0) {
+      console.log("Remaining cooldown from server:", remaining_cooldown_seconds);
+      if (remaining_cooldown_seconds) {
         // Sinkronkan storage lokal dengan angka terbaru dari server
-        await TimerHelper.setTarget(remaining_cooldown_seconds);
-        setCooldown(remaining_cooldown_seconds);
+        const getCurrentRemaining = calculateRemainingCooldown(company.start_clock_out, remaining_cooldown_seconds.clock_in);
+
+        console.log("Calculated remaining cooldown in seconds:", getCurrentRemaining);
+        await TimerHelper.setTarget(getCurrentRemaining);
+        setCooldown(getCurrentRemaining);
+
+        const getPhotoUri = remaining_cooldown_seconds.file_attachment ? `${process.env.EXPO_PUBLIC_STORAGE_URL}${remaining_cooldown_seconds.file_attachment}` : null;
+        // setPhoto(getPhotoUri ? [getPhotoUri] : []);
+        console.log("Photo URI from server:", getPhotoUri);
+        setPhoto(prev => [...(prev || []), getPhotoUri as string]);
       } else {
         await TimerHelper.clear();
         setCooldown(0);
@@ -192,8 +214,74 @@ export default function HomeScreen() {
     setLoadingLocation(false);
   }
 
-  const initHandleClockIn = () => {
-    router.push('/camera-modal');
+  const handleDeletePhoto = (idx: number) => {
+    if (cooldown > 0) {
+      $q.notif({
+        title: 'Tidak Bisa Hapus Foto',
+        description: 'Foto tidak bisa dihapus saat kamu sudah melakukan Clock In. Silakan lakukan Clock Out terlebih dahulu untuk menghapus foto.',
+        action: 'error',
+      });
+
+      return;
+    }
+    $q.dialog({
+      title: 'Hapus Foto',
+      description: 'Apakah kamu yakin ingin menghapus foto ini dari daftar?',
+      confirmText: 'Hapus',
+      cancelText: 'Batal',
+      onConfirm: () => {
+        setPhoto((prevPhotos) => prevPhotos?.filter((_, index) => index !== idx) || []);
+        $q.notif({
+          title: 'Foto Dihapus',
+          description: 'Foto berhasil dihapus dari daftar.',
+          action: 'success',
+        });
+      }
+    });
+  };
+
+  const initHandleClockIn = async () => {
+    const getCompanyStore = JSON.parse(await AsyncStorage.getItem('company') || '{}');
+    const getNowTime = new Date();
+    const timeString = getCompanyStore.work_start_time || '08:00';
+    const [hours, minutes] = timeString.split(':').map(Number);
+    const getStartWorkTime = new Date();
+    getStartWorkTime.setHours(hours, minutes, 0, 0);
+
+    if (getNowTime < getStartWorkTime) {
+      $q.dialog({
+        title: 'Belum Waktu Kerja',
+        description: `Waktu kerja kamu mulai pukul ${getStartWorkTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Silakan kembali lagi nanti.`,
+        confirmText: 'OK',
+        onConfirm: () => {
+          router.push('/camera-modal');
+        }
+      });
+    } else if (getNowTime > getStartWorkTime && getNowTime < new Date(getStartWorkTime.getTime() + 60 * 60 * 1000)) {
+      $q.dialog({
+        title: 'Waktu Kerja Dimulai',
+        description: `Waktu kerja kamu sudah dimulai. Silakan lakukan Clock In sekarang.`,
+        confirmText: 'OK',
+        onConfirm: () => {
+          router.push('/camera-modal');
+        }
+      });
+    } else if (getNowTime > new Date(getStartWorkTime.getTime() + 60 * 60 * 1000)) {
+      $q.dialog({
+        title: 'Terlambat Clock In',
+        description: `Waktu kerja kamu sudah dimulai lebih dari 1 jam yang lalu ${getStartWorkTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Apakah kamu yakin ingin melakukan Clock In?`,
+        confirmText: 'Yakin',
+        cancelText: 'Batal',
+        onConfirm: () => {
+          router.push('/camera-modal');
+        },
+        onCancel: () => {
+          console.log('User membatalkan Clock In karena terlambat');
+        }
+      });
+    } else {
+      router.push('/camera-modal');
+    }
   }
 
   const handleClockIn = () => {
@@ -215,8 +303,6 @@ export default function HomeScreen() {
         // Jalankan fungsi hit API kamu di sini jika klik Yakin
         const success = await executeClockInBackend();
         if (success) {
-          await TimerHelper.setTarget(60); // Contoh set cooldown 60 detik setelah Clock In
-          setCooldown(60);
           $q.notif({
             title: 'Clock In Berhasil',
             description: 'Kamu berhasil melakukan Clock In. Selamat bekerja!',
@@ -230,6 +316,23 @@ export default function HomeScreen() {
     });
   }
 
+  const handleClockOut = () => {}
+
+  const handleRestClockIn = () => {
+    $q.dialog({
+        title: 'Istirahat Clock In',
+        description: 'Apakah kamu yakin ingin melakukan Clock In untuk istirahat?',
+        confirmText: 'Yakin',
+        cancelText: 'Batal',
+        onConfirm: () => {
+          api.post('/attendances/rest-clock-in')
+        },
+        onCancel: () => {
+          console.log('User membatalkan Clock In untuk istirahat');
+        }
+      });
+  }
+  
   const executeClockInBackend = async () => {
     if (!location) {
       $q.notif({
@@ -259,10 +362,10 @@ export default function HomeScreen() {
         const formData = new FormData();
         formData.append('latitude', String(location.coords.latitude));
         formData.append('longitude', String(location.coords.longitude));
-        const localUri = photo!;
+        const localUri = typeof photo === 'string' ? photo : (Array.isArray(photo) ? photo[0] : photo);
 
         // 2. Ekstrak nama file asli dari ujung URI cache ImagePicker
-        const filename = localUri.split('/').pop() || 'photo.jpg';
+        const filename = String(localUri).split('/').pop() || 'photo.jpg';
         formData.append('photo', {
           uri: localUri,
           name: filename,
@@ -275,17 +378,23 @@ export default function HomeScreen() {
           },
         });
 
-        console.log("Clock In API response:", response.data);
-        return true;
+        let getData = response.data.data
+
+        const getCompanyStore = JSON.parse(await AsyncStorage.getItem('company') || '{}');
+
+        // Get remaining time between start_clock_out and now
+        if (getCompanyStore.start_clock_out) {
+          getDeviceTimezone(); // Pastikan untuk mendapatkan timezone perangkat sebelum menghitung waktu
+
+          const remainingTimeInSeconds = calculateRemainingCooldown(getCompanyStore.start_clock_out);
+          await TimerHelper.setTarget(remainingTimeInSeconds)
+          setCooldown(remainingTimeInSeconds); // Set cooldown berdasarkan sisa waktu ke work_start_time
+        }
+
+        return getData;
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         const errorResponse = error && typeof error === 'object' && 'response' in error ? (error as any).response : null;
-        console.error("Clock In API error:", errorResponse || errorMessage);
-        console.error("Clock In API error details:", {
-          message: errorMessage,
-          responseData: errorResponse?.data,
-          responseStatus: errorResponse?.status,
-        });
 
         const serverMessage = errorResponse?.data?.error || errorMessage;
         $q.notif({
@@ -301,6 +410,57 @@ export default function HomeScreen() {
     }
   }
 
+  const calculateRemainingCooldown = (startClockOut: string, startClockIn: string = '') => {
+    const [hours, minutes] = startClockOut.split(':').map(Number);
+    const workEndTime = new Date();
+    workEndTime.setHours(hours, minutes, 0, 0);
+
+    let now
+    if (startClockIn) {
+      const [inHours, inMinutes] = startClockIn.split(':').map(Number);
+      now = new Date();
+      now.setHours(inHours, inMinutes, 0, 0);
+    } else {
+      now = new Date();
+    }
+
+    const remainingTime = workEndTime.getTime() - now.getTime();
+    return Math.max(0, Math.floor(remainingTime / 1000)); // Pastikan tidak negatif
+  }
+
+  const convertSecondsToHMS = (totalSeconds: number) => {
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return `${hours}h ${minutes}m ${seconds}s`;
+  }
+
+  const getListLocations = async () => {
+    try {
+      const response = await api.get('/gps-location');
+      console.log("List of attendance locations:", response.data);
+      setListSetupLocations(response.data.data);
+    } catch (error) {
+      console.error("Failed to fetch attendance locations:", error);
+      $q.notif({
+        title: 'Gagal Memuat Lokasi',
+        description: 'Tidak dapat memuat daftar lokasi kehadiran. Silakan coba lagi nanti.',
+        action: 'error',
+      });
+    }
+  }
+
+  const onPressPhoto = (uri: string) => {
+    router.push({
+      pathname: '/photo-viewer',
+      params: {
+        photoUri: uri,
+        title: 'Foto Presensi',
+        subtitle: new Date().toLocaleString()
+      }
+    });
+  }
+
   return (
     <View style={styles.mapContainer}>
       <MapView
@@ -309,6 +469,7 @@ export default function HomeScreen() {
         initialRegion={initialRegion}
         showsUserLocation={true}
         showsMyLocationButton={false}
+        loadingEnabled={loadingLocation}
       >
         {/* Trik memuat OpenStreetMap secara gratis */}
         <UrlTile
@@ -320,15 +481,50 @@ export default function HomeScreen() {
         {/* Pin Penanda Posisi Karyawan */}
         {location && (
           <Marker
+            key="user-location"
             coordinate={{
               latitude: location.coords.latitude,
               longitude: location.coords.longitude,
             }}
             title="Posisi Kamu"
             description="Lokasi clock-in saat ini"
-          />
+          >
+            <Image
+              source={require('@/assets/images/location.png')}
+              style={{ width: 35, height: 35 }}
+              resizeMode="contain"
+            />
+          </Marker>
         )}
 
+        {listSetupLocations.length > 0 &&
+          listSetupLocations.map((loc) => (
+            <Marker
+              key={loc.id}
+              coordinate={{
+                latitude: parseFloat(loc.latitude),
+                longitude: parseFloat(loc.longitude),
+              }}
+              title={loc.gpc_location_name}
+              description={`Radius absen : ${loc.radius} Meter`}
+              pinColor="#FF6B6B"
+            />
+          ))
+        }
+
+        {listSetupLocations.length > 0 &&
+          listSetupLocations.map((loc) => (
+            <Circle
+              center={{
+                latitude: parseFloat(loc.latitude),
+                longitude: parseFloat(loc.longitude),
+              }}
+              radius={parseFloat(loc.radius)}
+              strokeColor="rgba(0, 0, 255, 0.5)"
+              fillColor="rgba(0, 0, 255, 0.2)"
+            />
+          ))
+        }
       </MapView>
 
       <TouchableOpacity
@@ -358,23 +554,74 @@ export default function HomeScreen() {
 
             {/* ml-auto sekarang akan bekerja sempurna karena parent-nya sudah full width */}
             <VStack className="ml-auto items-end px-2 py-1 rounded">
-              <Text size="xs" className='text-gray-500'>Timer</Text>
-              <Heading size="xs" className='text-black'>{cooldown > 0 ? `${cooldown}s` : 'Ready'}</Heading>
+              <Text size="xs" className='text-gray-500'>Until Clock Out</Text>
+              <Heading size="xs" className='text-black'>{cooldown > 0 ? convertSecondsToHMS(cooldown) : 'Ready'}</Heading>
             </VStack>
           </HStack>
         </VStack>
       </View>
 
+      {/* For button */}
       <View style={styles.floatingButtonContainer}>
         <VStack space="md" className="w-full">
-          <Button size="lg" className={`w-full rounded-full ${cooldown > 0 ? 'bg-red-500' : 'bg-blue-500'}`} onPress={initHandleClockIn}>
-            <ButtonText className='text-white'>{cooldown > 0 ? `Clock Out` : 'Clock In Sekarang'}</ButtonText>
-            <ButtonIcon as={cooldown > 0 ? ClockCheck : Timer} color="#ffffff" />
-          </Button>
-          <Button isDisabled={cooldown === 0} size="lg" className={`w-full rounded-full bg-orange-500`} onPress={handleClockIn}>
-            <ButtonText className='text-white'>{`Rest Clock In`}</ButtonText>
+          {
+            cooldown === 0 && photo?.length === 0 && (
+              <Button size="lg" className={`w-full rounded-full bg-blue-500`} onPress={initHandleClockIn}>
+                <ButtonText className='text-white'>Ambil Foto Absen</ButtonText>
+                <ButtonIcon as={Camera} color="#ffffff" />
+              </Button>
+            )
+          }
+          {
+            cooldown === 0 && (
+              <Button size="lg" className={`w-full rounded-full bg-green-500`} onPress={initHandleClockIn}>
+                <ButtonText className='text-white'>Clock In Sekarang</ButtonText>
+                <ButtonIcon as={ClockCheck} color="#ffffff" />
+              </Button>
+            )
+          }
+          {
+            cooldown > 0 && (
+              <Button size="lg" className={`w-full rounded-full bg-red-500`} onPress={handleClockOut} isDisabled={cooldown > 0}>
+                <ButtonText className='text-white'>Clock Out Sekarang</ButtonText>
+                <ButtonIcon as={ClockCheck} color="#ffffff" />
+              </Button>
+            )
+          }
+          
+          <Button isDisabled={cooldown === 0} size="lg" className={`w-full rounded-full bg-orange-500`} onPress={handleRestClockIn}>
+            <ButtonText className='text-white'>{`Istirahat Clock In`}</ButtonText>
             <ButtonIcon as={TimerOff} color="#ffffff" />
           </Button>
+        </VStack>
+      </View>
+
+      {/* Teste */}
+
+      <View style={styles.floatingListPhotosContainer}>
+        <VStack space="md" className='justify-end items-left'>
+          <Text size="md" className='text-gray-500'>Foto Presensi Kamu</Text>
+        </VStack>
+        <VStack space="md" className='justify-end items-center'>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <HStack space="md">
+              {photo && photo.length > 0 ? (
+                photo.map((uri, index) => (
+                  <TouchableOpacity key={index} onPress={() => onPressPhoto(uri)} onLongPress={() => handleDeletePhoto(index)}>
+                    <Image
+                      key={index}
+                      source={{ uri }}
+                      style={{ width: 40, height: 40, borderRadius: 8 }}
+                      resizeMode="cover"
+
+                    />
+                  </TouchableOpacity>
+                ))
+              ) : (
+                <Text size="md" className='text-gray-500'>Belum ada foto yang diambil.</Text>
+              )}
+            </HStack>
+          </ScrollView>
         </VStack>
       </View>
     </View>
@@ -415,8 +662,8 @@ const styles = StyleSheet.create({
   myLocationButton: {
     position: 'absolute',
     bottom: 130,      // Atur jarak dari bawah layar sesuai selera (di atas tombol absen)
-    right: 10,        // Jarak dari kanan layar
-    backgroundColor: '#ffffff',
+    right: 20,        // Jarak dari kanan layar
+    backgroundColor: '#fff',
     width: 50,
     height: 50,
     borderRadius: 25, // Membuat tombol bulat sempurna
@@ -428,6 +675,17 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 3.84,
     zIndex: 10,       // Memastikan tombol berada di atas peta
+  },
+  floatingListPhotosContainer: {
+    position: 'absolute',
+    bottom: 130,      // Atur jarak dari bawah layar sesuai selera (di atas tombol absen)
+    left: 20,        // Jarak dari kiri layar
+    right: 90,       // Jarak dari kanan layar (50 untuk myLocationButton + 20 padding + 20 spacing)
+    backgroundColor: 'rgba(194, 194, 194, 0.85)',
+    borderRadius: 12,
+    padding: 5,
+    zIndex: 10,      // Memastikan tombol berada di atas peta
+    height: 70,
   },
   map: {
     ...StyleSheet.absoluteFillObject,
