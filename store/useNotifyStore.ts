@@ -1,15 +1,28 @@
 import { create } from 'zustand';
 
+// 1. Definisikan tipe input yang didukung oleh form dialog
+export interface DialogFormField {
+  key: string;
+  label: string;
+  placeholder?: string;
+  type?: 'text' | 'number' | 'textarea';
+  defaultValue?: string;
+  required?: boolean; // 🌟 Tambahkan opsi required di sini
+}
+
+// 2. Perbarui opsi dialog agar mendukung field form dan callback data
 interface DialogOptions {
   title: string;
   description: string;
-  onConfirm?: () => void;
-  onCancel?: () => void;
   confirmText?: string;
   cancelText?: string;
+  formFields?: DialogFormField[]; // Tempat menaruh array field form kustom
+  // Perbarui agar bisa menerima objek dynamic string: { [key]: 'value' }
+  onConfirm?: (formData: Record<string, string>) => void | Promise<void>; 
+  onCancel?: () => void;
 }
 
-// Tipe data agar coding lebih aman (Type Safety)
+// Opsi Toast/Notifikasi tetap aman tidak berubah
 interface ToastOptions {
   title: string;
   description?: string;
@@ -18,8 +31,8 @@ interface ToastOptions {
 }
 
 interface NotifyState {
-  _show: (opts: ToastOptions) => void; // Fungsi internal
-  notif: (opts: ToastOptions) => void; // Fungsi yang akan kita panggil ($q.notif)
+  _show: (opts: ToastOptions) => void;
+  notif: (opts: ToastOptions) => void;
   isDialogOpen: boolean;
   dialogConfig: DialogOptions | null;
   dialog: (options: DialogOptions) => void;
@@ -27,7 +40,7 @@ interface NotifyState {
 }
 
 export const useNotifyStore = create<NotifyState>((set, get) => ({
-  _show: () => {}, // Placeholder awal
+  _show: () => {}, 
   notif: (opts) => {
     const trigger = get()._show;
     trigger(opts);
@@ -35,16 +48,16 @@ export const useNotifyStore = create<NotifyState>((set, get) => ({
   isDialogOpen: false,
   dialogConfig: null,
 
-  // 3. Fungsi Panggil Dialog (Mirip $q.dialog)
+  // Fungsi Panggil Dialog (Mendukung penggabungan properti default)
   dialog: (options) => set({
     isDialogOpen: true,
     dialogConfig: {
       confirmText: 'OK',
       cancelText: 'Batal',
-      ...options // Menggabungkan custom text jika ada
+      ...options // Otomatis memasukkan formFields dan onConfirm versi baru jika dilempar
     }
   }),
 
-  // 4. Fungsi Tutup Dialog
+  // Fungsi Tutup Dialog
   closeDialog: () => set({ isDialogOpen: false, dialogConfig: null }),
 }));

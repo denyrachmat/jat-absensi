@@ -1,22 +1,23 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useState } from 'react';
-import { Image, ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native';
+import { Animated, Image, ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native';
 
 import { Avatar, AvatarBadge, AvatarFallbackText } from '@/components/ui/avatar';
-import { Button, ButtonIcon, ButtonText } from '@/components/ui/button';
+import { Button, ButtonIcon, ButtonSpinner, ButtonText } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Heading } from '@/components/ui/heading';
 import { HStack } from '@/components/ui/hstack';
 import { Text } from '@/components/ui/text';
 import { VStack } from '@/components/ui/vstack';
 
-import { Camera, ClockCheck, Compass, TimerOff } from 'lucide-react-native';
+import { AlarmClockCheck, Camera, Compass, TimerOff } from 'lucide-react-native';
 
 import { useNotifyStore } from '@/store/useNotifyStore';
 import * as Location from 'expo-location';
 import MapView, { Circle, Marker, UrlTile } from 'react-native-maps';
 // import AsyncStorage from '@react-native-async-storage/async-storage';
 import { api } from '@/services/api';
-import { TimerHelper } from '@/services/timerServices';
+import { clearTimer, getRemainingTimer, setTimerTarget } from '@/services/timerServices';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Localization from 'expo-localization';
 
@@ -30,20 +31,33 @@ export default function HomeScreen() {
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
   const [loadingLocation, setLoadingLocation] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+
   const [cooldown, setCooldown] = useState(0);
+  const [isDonePresence, setIsDonePresence] = useState(false);
+
+  const [restCooldown, setRestCooldown] = useState(0);
+  const [isRestDone, setIsRestDone] = useState(false);
+
   const [loading, setLoading] = useState(true);
   const [employee, setEmployee] = useState<Employee>({});
   const [company, setCompany] = useState<any>({});
   const [photo, setPhoto] = useState<Array<string> | null>([]);
   const [listSetupLocations, setListSetupLocations] = useState<any[]>([]);
+  const [checkPhotoMode, setCheckPhotoMode] = useState(false);
+  const [selectedPhotos, setSelectedPhotos] = useState<Set<number>>(new Set());
 
   const mapRef = React.useRef<MapView>(null);
+  const restIntervalRef = React.useRef<NodeJS.Timeout | null>(null);
+  const blinkAnim = React.useRef(new Animated.Value(0)).current;
   const router = useRouter();
   const params = useLocalSearchParams();
 
   const $q = useNotifyStore();
 
   React.useEffect(() => {
+    // setLoadingLocation(true);
+    // setLoading(true);
+
     getInitialLocation();
     getEmployeeData();
     fetchCurrentLocation()
@@ -54,14 +68,15 @@ export default function HomeScreen() {
     });
   }, []);
 
+  // ==========================================
+  // ⏱️ EFFECT 1: PEMANTAU COOLDOWN WORKTIME (HITUNG MUNDUR)
+  // ==========================================
   React.useEffect(() => {
     if (cooldown <= 0) return;
 
     const interval = setInterval(async () => {
-      // Selalu cek sisa waktu asli dari helper agar presisi
-      const remaining = await TimerHelper.getRemaining();
+      const remaining = await getRemainingTimer('COOLDOWN_KEY');
       setCooldown(remaining);
-
       if (remaining <= 0) {
         clearInterval(interval);
       }
@@ -70,6 +85,64 @@ export default function HomeScreen() {
     return () => clearInterval(interval);
   }, [cooldown]);
 
+  // ==========================================
+  // 📈 EFFECT 2: PEMANTAU DURASI ISTIRAHAT (HITUNG MAJU)
+  // ==========================================
+  React.useEffect(() => {
+    const startRestInterval = async () => {
+      // Ambil durasi awal saat screen dimuat
+      const remainingRest = await getRemainingTimer('INCTIME_KEY', false);
+      setRestCooldown(remainingRest);
+
+      // Jalankan interval pemantau real-time
+      restIntervalRef.current = setInterval(async () => {
+        const currentRest = await getRemainingTimer('INCTIME_KEY', false);
+        setRestCooldown(currentRest);
+      }, 1000) as any;
+    };
+
+    startRestInterval();
+
+    // Cleanup interval saat user keluar halaman
+    return () => {
+      if (restIntervalRef.current) {
+        clearInterval(restIntervalRef.current);
+      }
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (isRestDone) {
+      if (restIntervalRef.current) {
+        clearInterval(restIntervalRef.current);
+      }
+    }
+  }, [restCooldown, isRestDone]);
+
+  // ==========================================
+  // ✨ EFFECT 3: BLINKING ANIMATION UNTUK REST COOLDOWN
+  // ==========================================
+  React.useEffect(() => {
+    if (restCooldown > 0) {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(blinkAnim, {
+            toValue: 1,
+            duration: 500,
+            useNativeDriver: false,
+          }),
+          Animated.timing(blinkAnim, {
+            toValue: 0,
+            duration: 500,
+            useNativeDriver: false,
+          }),
+        ])
+      ).start();
+    } else {
+      blinkAnim.setValue(0);
+    }
+  }, [restCooldown, blinkAnim]);
+
   React.useEffect(() => {
     if (params?.photoUri) {
       setPhoto(prev => [...(prev || []), params.photoUri as string]);
@@ -77,7 +150,9 @@ export default function HomeScreen() {
   }, [params?.photoUri]);
 
   React.useEffect(() => {
-    syncTimer()
+    if (cooldown === 0) {
+      syncTimer()
+    }
   }, [company]);
 
   // Koordinat default (Jakarta) jika lokasi gagal dimuat
@@ -92,7 +167,6 @@ export default function HomeScreen() {
     try {
       const employeeData = await AsyncStorage.getItem('employee');
       if (employeeData) {
-        console.log("Employee data loaded from AsyncStorage:", JSON.parse(employeeData));
         setEmployee(JSON.parse(employeeData));
       }
     } catch (error) {
@@ -142,8 +216,6 @@ export default function HomeScreen() {
         accuracy: Location.Accuracy.Balanced,
       });
 
-      console.log('Koordinat GPS berhasil dideteksi:', currentPosition);
-
       setLocation(currentPosition);
 
       if (mapRef.current && currentPosition) {
@@ -169,26 +241,81 @@ export default function HomeScreen() {
       const remaining_cooldown_seconds = response.data.data;
 
       console.log("Remaining cooldown from server:", remaining_cooldown_seconds);
-      if (remaining_cooldown_seconds) {
+      if (remaining_cooldown_seconds && remaining_cooldown_seconds.clock_in) {
+        const [hoursStartClock, minutesStartClock] = remaining_cooldown_seconds.clock_istirahat.split(':').map(Number);
+        const clockInStartTime = new Date();
+        clockInStartTime.setHours(hoursStartClock, minutesStartClock, 0, 0);
         // Sinkronkan storage lokal dengan angka terbaru dari server
         const getCurrentRemaining = calculateRemainingCooldown(company.start_clock_out, remaining_cooldown_seconds.clock_in);
 
-        console.log("Calculated remaining cooldown in seconds:", getCurrentRemaining);
-        await TimerHelper.setTarget(getCurrentRemaining);
+        // console.log("Calculated remaining cooldown in seconds:", getCurrentRemaining);
+        await setTimerTarget('COOLDOWN_KEY', getCurrentRemaining);
         setCooldown(getCurrentRemaining);
 
         const getPhotoUri = remaining_cooldown_seconds.file_attachment ? `${process.env.EXPO_PUBLIC_STORAGE_URL}${remaining_cooldown_seconds.file_attachment}` : null;
         // setPhoto(getPhotoUri ? [getPhotoUri] : []);
-        console.log("Photo URI from server:", getPhotoUri);
+        // console.log("Photo URI from server:", getPhotoUri);
         setPhoto(prev => [...(prev || []), getPhotoUri as string]);
+
+        if (remaining_cooldown_seconds.clock_istirahat) {
+          const [hours, minutes] = remaining_cooldown_seconds.clock_istirahat.split(':').map(Number);
+          const restStartTime = new Date();
+          restStartTime.setHours(hours, minutes, 0, 0);
+
+          // 🌟 VALIDASI KETAT: Hanya simpan jika waktu tersebut SEBELUM waktu sekarang (Masa Lalu)
+          if (restStartTime.getTime() < Date.now()) {
+            await AsyncStorage.setItem('INCTIME_KEY', restStartTime.getTime().toString());
+
+            const elapsedMillis = Date.now() - restStartTime.getTime();
+            setRestCooldown(Math.floor(elapsedMillis / 1000));
+          } else {
+            console.warn("Waktu istirahat dari server berada di masa depan. Mengabaikan dan membersihkan timer istirahat lokal.", remaining_cooldown_seconds.clock_istirahat);
+            // Jika jam dari server ngaco/di masa depan, anggap belum istirahat hari ini
+            await AsyncStorage.removeItem('INCTIME_KEY');
+            // setRestCooldown(0);
+          }
+
+          if (remaining_cooldown_seconds.clock_istirahat_out) {
+            const [hoursOut, minutesOut] = remaining_cooldown_seconds.clock_istirahat_out.split(':').map(Number);
+            const restStartTimeOut = new Date();
+
+            restStartTimeOut.setHours(hoursOut, minutesOut, 0, 0);
+            await AsyncStorage.setItem('INCTIME_KEY', restStartTimeOut.getTime().toString());
+
+            const elapsedMillis = restStartTimeOut.getTime() - restStartTime.getTime();
+
+            console.log("Calculated elapsed total with out rest time in seconds:", Math.floor(elapsedMillis / 1000));
+            setIsRestDone(true);
+            setRestCooldown(Math.floor(elapsedMillis / 1000));
+            if (restIntervalRef.current) {
+              clearInterval(restIntervalRef.current);
+            }
+          }
+        } else {
+          console.log("No active rest cooldown from server, clearing local rest timer.");
+        }
+
+        if (remaining_cooldown_seconds.clock_out) {
+          const [hoursOut, minutesOut] = remaining_cooldown_seconds.clock_out.split(':').map(Number);
+          const clockOutTime = new Date();
+          clockOutTime.setHours(hoursOut, minutesOut, 0, 0);
+          const elapsedMillis = clockInStartTime.getTime() - clockOutTime.getTime(); 
+          await AsyncStorage.setItem('COOLDOWN_KEY', elapsedMillis.toString());
+          setIsDonePresence(true);
+        }
       } else {
-        await TimerHelper.clear();
+        console.log("No active cooldown from server, clearing local timer.", remaining_cooldown_seconds);
+        await clearTimer('COOLDOWN_KEY');
         setCooldown(0);
+        await clearTimer('INCTIME_KEY');
+        setRestCooldown(0);
       }
     } catch (error) {
       // 2. FALLBACK: Jika internet putus/offline, gunakan hitungan lokal AsyncStorage
-      const localRemaining = await TimerHelper.getRemaining();
+      const localRemaining = await getRemainingTimer('COOLDOWN_KEY');
       setCooldown(localRemaining);
+      const localRestRemaining = await getRemainingTimer('INCTIME_KEY');
+      setRestCooldown(localRestRemaining);
     } finally {
       setLoading(false);
     }
@@ -240,6 +367,10 @@ export default function HomeScreen() {
     });
   };
 
+  const takePhoto = () => {
+    router.push('/camera-modal');
+  }
+
   const initHandleClockIn = async () => {
     const getCompanyStore = JSON.parse(await AsyncStorage.getItem('company') || '{}');
     const getNowTime = new Date();
@@ -254,7 +385,7 @@ export default function HomeScreen() {
         description: `Waktu kerja kamu mulai pukul ${getStartWorkTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Silakan kembali lagi nanti.`,
         confirmText: 'OK',
         onConfirm: () => {
-          router.push('/camera-modal');
+          executeClockInBackend()
         }
       });
     } else if (getNowTime > getStartWorkTime && getNowTime < new Date(getStartWorkTime.getTime() + 60 * 60 * 1000)) {
@@ -263,7 +394,7 @@ export default function HomeScreen() {
         description: `Waktu kerja kamu sudah dimulai. Silakan lakukan Clock In sekarang.`,
         confirmText: 'OK',
         onConfirm: () => {
-          router.push('/camera-modal');
+          executeClockInBackend()
         }
       });
     } else if (getNowTime > new Date(getStartWorkTime.getTime() + 60 * 60 * 1000)) {
@@ -273,66 +404,215 @@ export default function HomeScreen() {
         confirmText: 'Yakin',
         cancelText: 'Batal',
         onConfirm: () => {
-          router.push('/camera-modal');
+          executeClockInBackend()
         },
         onCancel: () => {
           console.log('User membatalkan Clock In karena terlambat');
         }
       });
     } else {
-      router.push('/camera-modal');
+      // executeClockInBackend();
     }
   }
 
-  const handleClockIn = () => {
-    if (!photo) {
-      $q.notif({
-        title: 'Foto Absen Belum Ada',
-        description: 'Silakan ambil foto absen terlebih dahulu sebelum melakukan Clock In.',
-        action: 'error',
-      });
-      return;
-    }
-
+  const handleClockOut = () => {
     $q.dialog({
-      title: 'Konfirmasi Presensi',
-      description: 'Apakah kamu yakin ingin melakukan Clock In pada lokasi saat ini?',
+      title: 'Clock Out',
+      description: 'Apakah kamu yakin ingin melakukan Clock Out?',
       confirmText: 'Yakin',
       cancelText: 'Batal',
-      onConfirm: async () => {
-        // Jalankan fungsi hit API kamu di sini jika klik Yakin
-        const success = await executeClockInBackend();
-        if (success) {
-          $q.notif({
-            title: 'Clock In Berhasil',
-            description: 'Kamu berhasil melakukan Clock In. Selamat bekerja!',
-            action: 'success',
+      formFields: [
+        {
+          key: 'reason_note',
+          label: 'Job Description / Alasan Clock Out',
+          placeholder: 'Contoh: Selesai bekerja, pulang lebih awal karena ada keperluan mendadak, dll.',
+          type: 'textarea',
+          required: true,
+        }
+      ],
+      onConfirm: async (formValues) => {
+        try {
+          setLoading(true);
+          const formData = new FormData();
+          const localUri = typeof photo === 'string' ? photo : (Array.isArray(photo) ? photo[0] : photo);
+
+          // 2. Ekstrak nama file asli dari ujung URI cache ImagePicker
+          const filename = String(localUri).split('/').pop() || 'photo.jpg';
+          formData.append('photo', {
+            uri: localUri,
+            name: filename,
+            type: 'image/jpeg', // Menyesuaikan dengan ekstensi .jpeg dari ImagePicker kamu
+          } as any);
+
+          formData.append('activity', formValues.reason_note || '');
+
+          const response = await api.post('/attendances/clock-out', formData, {
+            headers: {
+              'Content-Type': 'multipart/form-data',
+            },
           });
+
+          console.log("Response dari server setelah Clock Out:", response.data);
+          if (response.data) {
+            await clearTimer('COOLDOWN_KEY');
+            await clearTimer('INCTIME_KEY');
+            setCooldown(0);
+            setRestCooldown(0);
+            setIsRestDone(false);
+            setPhoto([]);
+            $q.notif({
+              title: 'Clock Out Berhasil',
+              description: 'Kamu telah melakukan Clock Out. Sampai jumpa besok!',
+              action: 'success',
+            });
+
+          } else {
+            $q.notif({
+              title: 'Clock Out Gagal',
+              description: 'Gagal melakukan Clock Out. Silakan coba lagi.',
+              action: 'error',
+            });
+          }
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          const errorResponse = error && typeof error === 'object' && 'response' in error ? (error as any).response : null;
+          const serverMessage = errorResponse?.data?.error || errorMessage;
+          $q.notif({
+            title: 'Clock Out Gagal',
+            description: serverMessage,
+            action: 'error',
+          });
+        } finally {
+          setLoading(false);
         }
       },
       onCancel: () => {
-        console.log('User membatalkan absen');
+        console.log('User membatalkan Clock Out');
       }
     });
   }
 
-  const handleClockOut = () => {}
-
   const handleRestClockIn = () => {
     $q.dialog({
-        title: 'Istirahat Clock In',
-        description: 'Apakah kamu yakin ingin melakukan Clock In untuk istirahat?',
-        confirmText: 'Yakin',
-        cancelText: 'Batal',
-        onConfirm: () => {
-          api.post('/attendances/rest-clock-in')
-        },
-        onCancel: () => {
-          console.log('User membatalkan Clock In untuk istirahat');
+      title: 'Istirahat Clock In',
+      description: 'Apakah kamu yakin ingin melakukan Clock In untuk istirahat?',
+      confirmText: 'Yakin',
+      cancelText: 'Batal',
+      onConfirm: async () => {
+        setLoading(true);
+        if (!location) {
+          $q.notif({
+            title: 'Lokasi Tidak Terdeteksi',
+            description: 'Tidak dapat mendeteksi lokasi kamu. Pastikan GPS aktif dan coba lagi.',
+            action: 'error',
+          });
+          return;
         }
-      });
+
+        try {
+          const formData = new FormData();
+          formData.append('latitude', String(location.coords.latitude));
+          formData.append('longitude', String(location.coords.longitude));
+          const localUri = typeof photo === 'string' ? photo : (Array.isArray(photo) ? photo[0] : photo);
+
+          // 2. Ekstrak nama file asli dari ujung URI cache ImagePicker
+          const filename = String(localUri).split('/').pop() || 'photo.jpg';
+          formData.append('photo', {
+            uri: localUri,
+            name: filename,
+            type: 'image/jpeg', // Menyesuaikan dengan ekstensi .jpeg dari ImagePicker kamu
+          } as any);
+
+          const response = await api.post('/attendances/clock-istirahat', formData, {
+            headers: {
+              'Content-Type': 'multipart/form-data',
+            },
+          });
+          const getData = response.data.data;
+
+          if (getData) {
+            // const remainingTimeInSeconds = calculateRemainingCooldown(getData.start_clock_out);
+            await AsyncStorage.removeItem('INCTIME_KEY');
+
+            const startTime = Date.now().toString();
+            await AsyncStorage.setItem('INCTIME_KEY', startTime);
+
+            setRestCooldown(1);
+          }
+
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          const errorResponse = error && typeof error === 'object' && 'response' in error ? (error as any).response : null;
+
+          const serverMessage = errorResponse?.data?.error || errorMessage;
+          $q.notif({
+            title: 'Clock In Gagal',
+            description: serverMessage,
+            action: 'error',
+          });
+        } finally {
+          setSubmitting(false);
+          setLoading(false);
+        }
+      },
+      onCancel: () => {
+        console.log('User membatalkan Clock In untuk istirahat');
+      }
+    });
   }
-  
+
+  const handleRestClockOut = () => {
+    $q.dialog({
+      title: 'Istirahat Clock Out',
+      description: 'Apakah kamu yakin ingin melakukan Clock Out untuk istirahat?',
+      confirmText: 'Yakin',
+      cancelText: 'Batal',
+      onConfirm: async () => {
+        try {
+          setLoading(true);
+          if (!location) {
+            $q.notif({
+              title: 'Lokasi Tidak Terdeteksi',
+              description: 'Tidak dapat mendeteksi lokasi kamu. Pastikan GPS aktif dan coba lagi.',
+              action: 'error',
+            });
+            return;
+          }
+
+          const formData = new FormData();
+          formData.append('latitude', String(location.coords.latitude));
+          formData.append('longitude', String(location.coords.longitude));
+
+          const response = await api.post('/attendances/clock-istirahat-out');
+
+          if (response.data.data) {
+            await clearTimer('INCTIME_KEY');
+            setRestCooldown(0);
+            $q.notif({
+              title: 'Clock Out Istirahat Berhasil',
+              description: 'Kamu telah melakukan Clock Out untuk istirahat.',
+              action: 'success',
+            });
+          }
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          const errorResponse = error && typeof error === 'object' && 'response' in error ? (error as any).response : null;
+          const serverMessage = errorResponse?.data?.error || errorMessage;
+          $q.notif({
+            title: 'Clock Out Istirahat Gagal',
+            description: serverMessage,
+            action: 'error',
+          });
+        } finally {
+          setLoading(false);
+        }
+      },
+      onCancel: () => {
+        console.log('User membatalkan Clock Out untuk istirahat');
+      }
+    });
+  }
+
   const executeClockInBackend = async () => {
     if (!location) {
       $q.notif({
@@ -351,11 +631,9 @@ export default function HomeScreen() {
             description: 'Silakan ambil foto terlebih dahulu sebelum melakukan Clock In.',
             action: 'error',
           });
-
-          console.log('Check Photo Failed: Photo data is null', photo);
           return false;
         }
-
+        setLoading(true);
         setSubmitting(true);
 
         // Convert photo URI to blob for proper file upload
@@ -387,7 +665,7 @@ export default function HomeScreen() {
           getDeviceTimezone(); // Pastikan untuk mendapatkan timezone perangkat sebelum menghitung waktu
 
           const remainingTimeInSeconds = calculateRemainingCooldown(getCompanyStore.start_clock_out);
-          await TimerHelper.setTarget(remainingTimeInSeconds)
+          await setTimerTarget('COOLDOWN_KEY', remainingTimeInSeconds);
           setCooldown(remainingTimeInSeconds); // Set cooldown berdasarkan sisa waktu ke work_start_time
         }
 
@@ -406,6 +684,7 @@ export default function HomeScreen() {
         return false;
       } finally {
         setSubmitting(false);
+        setLoading(false);
       }
     }
   }
@@ -428,6 +707,16 @@ export default function HomeScreen() {
     return Math.max(0, Math.floor(remainingTime / 1000)); // Pastikan tidak negatif
   }
 
+  const calculateRemainingRestCooldown = (startIstirahat: string) => {
+    const [hours, minutes] = startIstirahat.split(':').map(Number);
+    const restStartTime = new Date();
+    restStartTime.setHours(hours, minutes, 0, 0);
+
+    const now = new Date();
+    const remainingTime = now.getTime() - restStartTime.getTime();
+    return Math.max(0, Math.floor(remainingTime / 1000)); // Pastikan tidak negatif
+  }
+
   const convertSecondsToHMS = (totalSeconds: number) => {
     const hours = Math.floor(totalSeconds / 3600);
     const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -438,7 +727,6 @@ export default function HomeScreen() {
   const getListLocations = async () => {
     try {
       const response = await api.get('/gps-location');
-      console.log("List of attendance locations:", response.data);
       setListSetupLocations(response.data.data);
     } catch (error) {
       console.error("Failed to fetch attendance locations:", error);
@@ -459,6 +747,10 @@ export default function HomeScreen() {
         subtitle: new Date().toLocaleString()
       }
     });
+  }
+
+  const checkCanClockIn = () => {
+
   }
 
   return (
@@ -498,9 +790,9 @@ export default function HomeScreen() {
         )}
 
         {listSetupLocations.length > 0 &&
-          listSetupLocations.map((loc) => (
+          listSetupLocations.map((loc, index) => (
             <Marker
-              key={loc.id}
+              key={`marker-${index}`}
               coordinate={{
                 latitude: parseFloat(loc.latitude),
                 longitude: parseFloat(loc.longitude),
@@ -513,8 +805,9 @@ export default function HomeScreen() {
         }
 
         {listSetupLocations.length > 0 &&
-          listSetupLocations.map((loc) => (
+          listSetupLocations.map((loc, index) => (
             <Circle
+              key={`circle-${index}`}
               center={{
                 latitude: parseFloat(loc.latitude),
                 longitude: parseFloat(loc.longitude),
@@ -527,6 +820,7 @@ export default function HomeScreen() {
         }
       </MapView>
 
+      {/* My Location Button */}
       <TouchableOpacity
         style={styles.myLocationButton}
         onPress={() => fetchCurrentLocation(true)} // Memanggil fungsi GPS yang sudah kamu buat
@@ -548,73 +842,127 @@ export default function HomeScreen() {
             </Avatar>
 
             <VStack>
-              <Heading size="sm" className='text-black'>{employee?.full_name || 'Ronald Richards'}</Heading>
+              <Heading size="xs" className='text-black'>{employee?.full_name || 'Ronald Richards'}</Heading>
               <Text size="xs" className='text-gray-500'>{employee?.job_position || 'Nursing Assistant'}</Text>
             </VStack>
 
-            {/* ml-auto sekarang akan bekerja sempurna karena parent-nya sudah full width */}
-            <VStack className="ml-auto items-end px-2 py-1 rounded">
-              <Text size="xs" className='text-gray-500'>Until Clock Out</Text>
-              <Heading size="xs" className='text-black'>{cooldown > 0 ? convertSecondsToHMS(cooldown) : 'Ready'}</Heading>
-            </VStack>
           </HStack>
         </VStack>
       </View>
 
-      {/* For button */}
+      <Animated.View style={[
+        styles.floatingTimerRestContainer,
+        restCooldown > 0 && !isRestDone && {
+          backgroundColor: blinkAnim.interpolate({
+            inputRange: [0, 1],
+            outputRange: ['rgba(255, 255, 255, 0.9)', 'rgba(255, 165, 0, 0.9)'],
+          }),
+        }
+      ]}>
+        <VStack space="2xl">
+          {/* Tambahkan className="w-full" di sini */}
+          <HStack space="md" className="w-full items-center justify-start">
+            <VStack className="px-2 py-1 rounded w-1/2">
+              <Text size="xs" className='text-gray-500'>Worktime Remaining</Text>
+              <Heading size="xs" className='text-black'>{cooldown > 0 ? convertSecondsToHMS(cooldown) : 'Ready'}</Heading>
+            </VStack>
+            <VStack className="px-2 py-1 rounded w-1/2">
+              <Text size="xs" className='text-gray-500'>Istirahat</Text>
+              <Heading size="xs" className='text-black'>{restCooldown > 0 ? convertSecondsToHMS(restCooldown) : 'Ready'}</Heading>
+            </VStack>
+          </HStack>
+        </VStack>
+      </Animated.View>
+
+      {/* Floating Button Container */}
       <View style={styles.floatingButtonContainer}>
         <VStack space="md" className="w-full">
           {
             cooldown === 0 && photo?.length === 0 && (
-              <Button size="lg" className={`w-full rounded-full bg-blue-500`} onPress={initHandleClockIn}>
+              <Button size="lg" className={`w-full rounded-full bg-blue-500`} onPress={takePhoto} isDisabled={loading}>
+                {
+                  loading && <ButtonSpinner color="#ffffff" />
+                }
                 <ButtonText className='text-white'>Ambil Foto Absen</ButtonText>
                 <ButtonIcon as={Camera} color="#ffffff" />
               </Button>
             )
           }
           {
-            cooldown === 0 && (
-              <Button size="lg" className={`w-full rounded-full bg-green-500`} onPress={initHandleClockIn}>
+            cooldown === 0 && (photo?.length ?? 0) > 0 && (
+              <Button size="lg" className={`w-full rounded-full bg-green-500`} onPress={initHandleClockIn} isDisabled={loading}>
+
+                {
+                  loading && <ButtonSpinner color="#ffffff" />
+                }
                 <ButtonText className='text-white'>Clock In Sekarang</ButtonText>
-                <ButtonIcon as={ClockCheck} color="#ffffff" />
+                <ButtonIcon as={AlarmClockCheck} color="#ffffff" />
               </Button>
             )
           }
           {
             cooldown > 0 && (
-              <Button size="lg" className={`w-full rounded-full bg-red-500`} onPress={handleClockOut} isDisabled={cooldown > 0}>
+              <Button size="lg" className={`w-full rounded-full bg-red-500`} onPress={handleClockOut} isDisabled={loading}>
+                {
+                  loading && <ButtonSpinner color="#ffffff" />
+                }
                 <ButtonText className='text-white'>Clock Out Sekarang</ButtonText>
-                <ButtonIcon as={ClockCheck} color="#ffffff" />
+                <ButtonIcon as={AlarmClockCheck} color="#ffffff" />
               </Button>
             )
           }
-          
-          <Button isDisabled={cooldown === 0} size="lg" className={`w-full rounded-full bg-orange-500`} onPress={handleRestClockIn}>
-            <ButtonText className='text-white'>{`Istirahat Clock In`}</ButtonText>
-            <ButtonIcon as={TimerOff} color="#ffffff" />
-          </Button>
+
+          {
+            restCooldown === 0 && (
+              <Button isDisabled={cooldown === 0 || loading} size="lg" className={`w-full rounded-full bg-orange-500`} onPress={handleRestClockIn}>
+                {
+                  loading && <ButtonSpinner color="#ffffff" />
+                }
+                <ButtonText className='text-white'>{`Istirahat Clock In`}</ButtonText>
+                <ButtonIcon as={TimerOff} color="#ffffff" />
+              </Button>)
+          }
+          {
+            restCooldown > 0 && (
+              <Button size="lg" className={`w-full rounded-full bg-purple-500`} onPress={handleRestClockOut} isDisabled={loading || isRestDone}>
+                {
+                  loading && <ButtonSpinner color="#ffffff" />
+                }
+                <ButtonText className='text-white'>Istirahat Clock Out</ButtonText>
+                <ButtonIcon as={TimerOff} color="#ffffff" />
+              </Button>
+            )
+          }
         </VStack>
       </View>
 
-      {/* Teste */}
-
+      {/* List Photos */}
       <View style={styles.floatingListPhotosContainer}>
         <VStack space="md" className='justify-end items-left'>
-          <Text size="md" className='text-gray-500'>Foto Presensi Kamu</Text>
+          <HStack className='justify-between items-center'>
+            <Text size="md" className='text-gray-500 font-bold'>Foto Presensi Kamu</Text>
+            <Checkbox value="checkPhotoMode" isChecked={checkPhotoMode} onChange={() => setCheckPhotoMode(!checkPhotoMode)} />
+          </HStack>
         </VStack>
         <VStack space="md" className='justify-end items-center'>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
             <HStack space="md">
               {photo && photo.length > 0 ? (
                 photo.map((uri, index) => (
-                  <TouchableOpacity key={index} onPress={() => onPressPhoto(uri)} onLongPress={() => handleDeletePhoto(index)}>
-                    <Image
-                      key={index}
-                      source={{ uri }}
-                      style={{ width: 40, height: 40, borderRadius: 8 }}
-                      resizeMode="cover"
-
-                    />
+                  <TouchableOpacity key={index} style={{ width: 60, height: 60 }} onPress={() => checkPhotoMode ? setSelectedPhotos(prev => { const newSet = new Set(prev); newSet.has(index) ? newSet.delete(index) : newSet.add(index); return newSet; }) : onPressPhoto(uri)} onLongPress={() => handleDeletePhoto(index)}>
+                    <View style={{ position: 'relative' }}>
+                      <Image
+                        key={index}
+                        source={{ uri }}
+                        style={{ width: 50, height: 50, top: 5, borderRadius: 8, opacity: selectedPhotos.has(index) ? 0.5 : 1 }}
+                        resizeMode="cover"
+                      />
+                      {checkPhotoMode && (
+                        <View style={{ position: 'absolute', top: 2, right: 2 }}>
+                          <Checkbox value={`photo-${index}`} isChecked={selectedPhotos.has(index)} onChange={() => setSelectedPhotos(prev => { const newSet = new Set(prev); newSet.has(index) ? newSet.delete(index) : newSet.add(index); return newSet; })} />
+                        </View>
+                      )}
+                    </View>
                   </TouchableOpacity>
                 ))
               ) : (
@@ -659,6 +1007,20 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-start',
     gap: 8,
   },
+  floatingTimerRestContainer: {
+    position: 'absolute',
+    top: 80,     // Jarak melayang dari ujung atas layar HP
+    left: 20,    // Memberikan space di kiri agar tidak mentok screen
+    right: 40,   // Memberikan space di kanan
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderRadius: 50,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    zIndex: 10,  // Memastikan wajib berdiri di atas lapisan peta
+    flexDirection: 'row',
+    justifyContent: 'flex-start',
+    gap: 8,
+  },
   myLocationButton: {
     position: 'absolute',
     bottom: 130,      // Atur jarak dari bawah layar sesuai selera (di atas tombol absen)
@@ -683,9 +1045,9 @@ const styles = StyleSheet.create({
     right: 90,       // Jarak dari kanan layar (50 untuk myLocationButton + 20 padding + 20 spacing)
     backgroundColor: 'rgba(194, 194, 194, 0.85)',
     borderRadius: 12,
-    padding: 5,
+    padding: 8,
     zIndex: 10,      // Memastikan tombol berada di atas peta
-    height: 70,
+    height: 90,
   },
   map: {
     ...StyleSheet.absoluteFillObject,

@@ -29,6 +29,8 @@ export default function Login() {
   const [isLoading, setIsLoading] = React.useState(false);
   const [fcmToken, setFcmToken] = React.useState('');
 
+  const [intervalCompany, setIntervalCompany] = React.useState<NodeJS.Timeout | null>(null);
+
   const $q = useNotifyStore();
   const router = useRouter();
 
@@ -38,7 +40,7 @@ export default function Login() {
       if (token) setFcmToken(token);
     }
 
-    getCompanyData();
+    if (intervalCompany) clearInterval(intervalCompany);
     initNotification();
   }, []);
 
@@ -86,7 +88,6 @@ export default function Login() {
         const err = error as any;
         console.error("Login failed:", err.response || err.message);
         const deviceId = await AsyncStorage.getItem('device_id');
-        console.log("request data:", { employee_id: Username, password: Password, device_id: deviceId, token_fcm: fcmToken });
         $q.notif({
           title: 'Login Failed',
           description: 'Please check your credentials and try again.',
@@ -101,8 +102,8 @@ export default function Login() {
   const getCompanyData = async () => {
     try {
       const response = await api.get('/company');
+      AsyncStorage.removeItem('company');
       AsyncStorage.setItem('company', JSON.stringify(response.data.data));
-      console.log("Company data:", response.data);
     } catch (error) {
       const err = error as any;
       console.error("Failed to fetch company data:", err.response || err.message);
@@ -123,7 +124,6 @@ export default function Login() {
           },
         })
           .then(async (response) => {
-            console.log("Check login expiring response:", response.data);
             await AsyncStorage.setItem('employee', JSON.stringify(response.data.data.employee));
 
             if (response.data.data.is_expiring) {
@@ -135,6 +135,13 @@ export default function Login() {
               // AsyncStorage.removeItem('user_token');
             } else {
               router.replace('/(tabs)');
+
+              if (intervalCompany) clearInterval(intervalCompany);
+              setIntervalCompany(
+                setInterval(() => {
+                  getCompanyData();
+                }, 60000) as unknown as NodeJS.Timeout // Update company data every 60 seconds
+              );
             }
           })
           .catch(async (error) => {
