@@ -69,12 +69,15 @@ export default function HomeScreen() {
   const [employee, setEmployee] = useState<Employee>({});
   const [company, setCompany] = useState<any>({});
   const [photo, setPhoto] = useState<Array<string> | null>([]);
+  const [photoClockOut, setPhotoClockOut] = useState<string | null>(null);
   const [listSetupLocations, setListSetupLocations] = useState<any[]>([]);
   const [checkPhotoMode, setCheckPhotoMode] = useState(false);
   const [selectedPhotos, setSelectedPhotos] = useState<Set<number>>(new Set());
 
+  const intervalLocation = React.useRef<ReturnType<typeof setInterval> | null>(null);
+
   const mapRef = React.useRef<MapView>(null);
-  const restIntervalRef = React.useRef<NodeJS.Timeout | null>(null);
+  const restIntervalRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   const blinkAnim = React.useRef(new Animated.Value(0)).current;
   const router = useRouter();
   const params = useLocalSearchParams();
@@ -82,17 +85,23 @@ export default function HomeScreen() {
   const $q = useNotifyStore();
 
   React.useEffect(() => {
-    // setLoadingLocation(true);
-    // setLoading(true);
-
     getInitialLocation();
     getEmployeeData();
     fetchCurrentLocation();
     getListLocations();
 
+    // const locationInterval = setInterval(getListLocations, 10000);
+    intervalLocation.current = setInterval(getListLocations, 10000);
+    // setIntervalLocation(locationInterval);
+
     AsyncStorage.getItem("company").then((data) => {
       setCompany(JSON.parse(data || "{}"));
     });
+
+    return () => {
+      if (intervalLocation.current) clearInterval(intervalLocation.current);
+      if (restIntervalRef.current) clearInterval(restIntervalRef.current);
+    };
   }, []);
 
   // ==========================================
@@ -169,16 +178,34 @@ export default function HomeScreen() {
     }
   }, [restCooldown, blinkAnim]);
 
+  // ==========================================
+  // ✨ EFFECT 4: MENANGANI FOTO
+  // ==========================================
   React.useEffect(() => {
     if (params?.photoUri) {
       setPhoto((prev) => [...(prev || []), params.photoUri as string]);
-    }
-  }, [params?.photoUri]);
 
+      if (params.idPhoto == "clock-out") {
+        console.log("Received photo URI for clock-out:", params.photoUri);
+        setPhotoClockOut(params.photoUri as string);
+      }
+    }
+  }, [params.photoUri, params.idPhoto]);
+
+  React.useEffect(() => {
+    if (photoClockOut) {
+      console.log("Photo Clock Out updated, initiating Clock Out process.");
+      handleClockOut()
+    }
+  }, [photoClockOut]);
+
+  // ==========================================
+  // ✨ EFFECT 5: SINKRONISASI OTOMATIS TIMER COOLDOWN DENGAN WAKTU RESMI PERUSAHAAN DARI SERVER
+  // ==========================================
   React.useEffect(() => {
     if (company) {
       console.log("Company start_clock_out:", company.start_clock_out);
-      syncTimer();
+      syncTimer(true);
     }
   }, [JSON.stringify(company)]);
 
@@ -194,6 +221,7 @@ export default function HomeScreen() {
     try {
       const employeeData = await AsyncStorage.getItem("employee");
       if (employeeData) {
+        console.log("Employee data loaded:", JSON.parse(employeeData));
         setEmployee(JSON.parse(employeeData));
       }
     } catch (error) {
@@ -266,32 +294,56 @@ export default function HomeScreen() {
     }
   };
 
-  const syncTimer = async () => {
+  const syncTimer = async (withPhoto = false) => {
     try {
+      setLoading(true)
       // 1. Cek status resmi ke Laravel Herd terlebih dahulu
       const response = await api.get("/attendances/today-presence");
       const remaining_cooldown_seconds = response.data.data;
 
       console.log(
-        "Remaining cooldown from server:",
-        remaining_cooldown_seconds,
+        "Get last clock in & company clock out:",
+        [remaining_cooldown_seconds, remaining_cooldown_seconds.clock_in, company.start_clock_out],
       );
 
       if (remaining_cooldown_seconds && remaining_cooldown_seconds.clock_in) {
-        const [hoursStartClock, minutesStartClock] =
-          remaining_cooldown_seconds.clock_istirahat.split(":").map(Number);
+        if (!company.start_clock_out) {
+          $q.notif({
+            title: "Data Perusahaan Tidak Lengkap",
+            description: "Data perusahaan tidak lengkap. Mohon hubungi admin untuk mengatur waktu kerja dan jam pulang perusahaan.",
+            action: "error",
+          });
+          setLoading(false)
 
-        const clockInStartTime = new Date();
-        clockInStartTime.setHours(hoursStartClock, minutesStartClock, 0, 0);
+          return;
+        }
+
+        if (remaining_cooldown_seconds.clock_out) {
+          $q.notif({
+            title: "Sudah Clock Out",
+            description: "Kamu sudah melakukan Clock Out hari ini. Terima kasih!",
+            action: "info",
+          });
+
+          await clearTimer("COOLDOWN_KEY");
+          setCooldown(0);
+          await clearTimer("INCTIME_KEY");
+          setRestCooldown(0);
+          setIsDonePresence(true);
+          setLoading(false)
+          return;
+          // setIsDonePresence(true);
+        }
 
         const checkTimerElapsed = await execTimerElapsed(
-          remaining_cooldown_seconds.clock_in,
+          new Date(Date.now()).toLocaleTimeString("en-GB", { hour12: false }),
           company.start_clock_out,
+          3 * 3600,
         );
 
         console.log(
           "Calculated remaining cooldown in seconds:",
-          checkTimerElapsed,
+          [checkTimerElapsed, remaining_cooldown_seconds.clock_in, company.start_clock_out],
         );
 
         await setTimerTarget("COOLDOWN_KEY", checkTimerElapsed);
@@ -302,11 +354,19 @@ export default function HomeScreen() {
           : null;
 
         console.log("Photo URI from server:", getPhotoUri);
-        setPhoto((prev) => [...(prev || []), getPhotoUri as string]);
 
-        console.log("Masuk sini");
+        if (withPhoto && getPhotoUri) {
+          setPhoto((prev) => [...([]), getPhotoUri as string]);
+        }
 
         if (remaining_cooldown_seconds.clock_istirahat) {
+
+          const [hoursStartClock, minutesStartClock] =
+            remaining_cooldown_seconds.clock_istirahat.split(":").map(Number);
+
+          const clockInStartTime = new Date();
+          clockInStartTime.setHours(hoursStartClock, minutesStartClock, 0, 0);
+
           const restStartTime = convertStringTimetoDate(
             remaining_cooldown_seconds.clock_istirahat,
           );
@@ -364,28 +424,6 @@ export default function HomeScreen() {
             "No active rest cooldown from server, clearing local rest timer.",
           );
         }
-
-        if (remaining_cooldown_seconds.clock_out) {
-          const [hoursOut, minutesOut] = remaining_cooldown_seconds.clock_out
-            .split(":")
-            .map(Number);
-          const clockOutTime = new Date();
-          clockOutTime.setHours(hoursOut, minutesOut, 0, 0);
-          const elapsedMillis =
-            clockInStartTime.getTime() - clockOutTime.getTime();
-
-          const elapsedMilisCheck = await execTimerElapsed(
-            remaining_cooldown_seconds.clock_in,
-            remaining_cooldown_seconds.clock_out,
-          );
-
-          console.log(
-            elapsedMillis,
-            "Elapsed milliseconds between clock_in and clock_out",
-          );
-          await AsyncStorage.setItem("COOLDOWN_KEY", elapsedMillis.toString());
-          setIsDonePresence(true);
-        }
       } else {
         console.log(
           "No active cooldown from server, clearing local timer.",
@@ -410,6 +448,7 @@ export default function HomeScreen() {
   const execTimerElapsed = async (
     times: string,
     compareTimes: Date | string,
+    spareTime: number = 0,
   ) => {
     const [hours, minutes] = times.split(":").map(Number);
     const targetTime = new Date();
@@ -425,7 +464,7 @@ export default function HomeScreen() {
       compareTime = compareTimes;
     }
 
-    const remainingTime = compareTime.getTime() - targetTime.getTime();
+    const remainingTime = compareTime.getTime() - targetTime.getTime() + spareTime * 1000;
     return Math.max(0, Math.floor(remainingTime / 1000));
   };
 
@@ -487,8 +526,13 @@ export default function HomeScreen() {
     });
   };
 
-  const takePhoto = () => {
-    router.push("/camera-modal");
+  const takePhoto = (idx: string) => {
+    router.push({
+      pathname: "/camera-modal",
+      params: {
+        id: idx,
+      },
+    });
   };
 
   const initHandleClockIn = async () => {
@@ -501,13 +545,15 @@ export default function HomeScreen() {
     const getStartWorkTime = new Date();
     getStartWorkTime.setHours(hours, minutes, 0, 0);
 
+    let result
+
     if (getNowTime < getStartWorkTime) {
       $q.dialog({
         title: "Belum Waktu Kerja",
         description: `Waktu kerja kamu mulai pukul ${getStartWorkTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}. Silakan kembali lagi nanti.`,
         confirmText: "OK",
         onConfirm: () => {
-          executeClockInBackend();
+          result = executeClockInBackend();
         },
       });
     } else if (
@@ -519,7 +565,7 @@ export default function HomeScreen() {
         description: `Waktu kerja kamu sudah dimulai. Silakan lakukan Clock In sekarang.`,
         confirmText: "OK",
         onConfirm: () => {
-          executeClockInBackend();
+          result = executeClockInBackend();
         },
       });
     } else if (
@@ -531,7 +577,7 @@ export default function HomeScreen() {
         confirmText: "Yakin",
         cancelText: "Batal",
         onConfirm: () => {
-          executeClockInBackend();
+          result = executeClockInBackend();
         },
         onCancel: () => {
           console.log("User membatalkan Clock In karena terlambat");
@@ -540,9 +586,26 @@ export default function HomeScreen() {
     } else {
       // executeClockInBackend();
     }
+
+    if (result) {
+      const remainingTimeInSeconds = calculateRemainingCooldown(
+        getCompanyStore.start_clock_out,
+      );
+      await setTimerTarget("COOLDOWN_KEY", remainingTimeInSeconds);
+      setCooldown(remainingTimeInSeconds); // Set cooldown berdasarkan sisa waktu ke work_start_time
+
+      syncTimer();
+    } else {
+      syncTimer();
+    }
   };
 
   const handleClockOut = () => {
+    if (!photoClockOut) {
+      takePhoto('clock-out')
+      return;
+    }
+
     $q.dialog({
       title: "Clock Out",
       description: "Apakah kamu yakin ingin melakukan Clock Out?",
@@ -562,12 +625,11 @@ export default function HomeScreen() {
         setLoading(true);
         try {
           const formData = new FormData();
-          const localUri =
-            typeof photo === "string"
-              ? photo
-              : Array.isArray(photo)
-                ? photo[0]
-                : photo;
+          const localUri = typeof photoClockOut === "string"
+            ? photoClockOut
+            : photo?.[1];
+
+          console.log("Local URI for Clock Out photo:", localUri);
 
           // 2. Ekstrak nama file asli dari ujung URI cache ImagePicker
           const filename = String(localUri).split("/").pop() || "photo.jpg";
@@ -607,6 +669,7 @@ export default function HomeScreen() {
             });
           }
         } catch (error) {
+          console.log("Error saat melakukan Clock Out:", error);
           const errorMessage =
             error instanceof Error ? error.message : "Unknown error";
           const errorResponse =
@@ -625,6 +688,7 @@ export default function HomeScreen() {
       },
       onCancel: () => {
         console.log("User membatalkan Clock Out");
+        syncTimer(true);
       },
     });
   };
@@ -704,10 +768,12 @@ export default function HomeScreen() {
         } finally {
           setSubmitting(false);
           setLoading(false);
+          syncTimer();
         }
       },
       onCancel: () => {
         console.log("User membatalkan Clock In untuk istirahat");
+        syncTimer();
       },
     });
   };
@@ -746,6 +812,8 @@ export default function HomeScreen() {
               description: "Kamu telah melakukan Clock Out untuk istirahat.",
               action: "success",
             });
+
+            syncTimer();
           }
         } catch (error) {
           const errorMessage =
@@ -762,6 +830,7 @@ export default function HomeScreen() {
           });
         } finally {
           setLoading(false);
+          syncTimer();
         }
       },
       onCancel: () => {
@@ -792,6 +861,7 @@ export default function HomeScreen() {
           });
           return false;
         }
+
         setLoading(true);
         setSubmitting(true);
 
@@ -814,13 +884,6 @@ export default function HomeScreen() {
           type: "image/jpeg", // Menyesuaikan dengan ekstensi .jpeg dari ImagePicker kamu
         } as any);
 
-        const response = await api.post("/attendances/clock-in", formData, {
-          headers: {
-            "Content-Type": "multipart/form-data",
-          },
-        });
-
-        let getData = response.data.data;
 
         const getCompanyStore = JSON.parse(
           (await AsyncStorage.getItem("company")) || "{}",
@@ -833,11 +896,34 @@ export default function HomeScreen() {
           const remainingTimeInSeconds = calculateRemainingCooldown(
             getCompanyStore.start_clock_out,
           );
-          await setTimerTarget("COOLDOWN_KEY", remainingTimeInSeconds);
-          setCooldown(remainingTimeInSeconds); // Set cooldown berdasarkan sisa waktu ke work_start_time
-        }
 
-        return getData;
+          if (remainingTimeInSeconds > 0) {
+            // console.log('Remaining time in seconds until work_start_time:', remainingTimeInSeconds);
+            // await setTimerTarget("COOLDOWN_KEY", remainingTimeInSeconds);
+            // setCooldown(remainingTimeInSeconds); // Set cooldown berdasarkan sisa waktu ke work_start_time
+
+            const response = await api.post("/attendances/clock-in", formData, {
+              headers: {
+                "Content-Type": "multipart/form-data",
+              },
+            });
+
+            let getData = response.data.data;
+
+            return getData;
+          } else {
+            $q.notif({
+              title: "Waktu Kerja Selesai",
+              description: `Waktu kerja kamu sudah selesai untuk hari ini ${getCompanyStore.start_clock_out}. Silakan lakukan Clock In kembali saat waktu kerja berikutnya dimulai.`,
+              action: "warning"
+            });
+
+            await clearTimer("COOLDOWN_KEY");
+            setCooldown(0);
+
+            return false
+          }
+        }
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : "Unknown error";
@@ -998,9 +1084,9 @@ export default function HomeScreen() {
               <AvatarFallbackText className="text-white">
                 {employee?.full_name
                   ? employee.full_name
-                      .split(" ")
-                      .map((n) => n[0])
-                      .join("")
+                    .split(" ")
+                    .map((n) => n[0])
+                    .join("")
                   : "NA"}
               </AvatarFallbackText>
               <AvatarBadge />
@@ -1022,15 +1108,15 @@ export default function HomeScreen() {
         style={[
           styles.floatingTimerRestContainer,
           restCooldown > 0 &&
-            !isRestDone && {
-              backgroundColor: blinkAnim.interpolate({
-                inputRange: [0, 1],
-                outputRange: [
-                  "rgba(255, 255, 255, 0.9)",
-                  "rgba(255, 165, 0, 0.9)",
-                ],
-              }),
-            },
+          !isRestDone && {
+            backgroundColor: blinkAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [
+                "rgba(255, 255, 255, 0.9)",
+                "rgba(255, 165, 0, 0.9)",
+              ],
+            }),
+          },
         ]}
       >
         <VStack space="2xl">
@@ -1063,7 +1149,7 @@ export default function HomeScreen() {
             <Button
               size="lg"
               className={`w-full rounded-full bg-blue-500`}
-              onPress={takePhoto}
+              onPress={() => takePhoto('clock-in')}
               isDisabled={loading}
             >
               {loading && <ButtonSpinner color="#ffffff" />}
@@ -1150,12 +1236,12 @@ export default function HomeScreen() {
                     onPress={() =>
                       checkPhotoMode
                         ? setSelectedPhotos((prev) => {
-                            const newSet = new Set(prev);
-                            newSet.has(index)
-                              ? newSet.delete(index)
-                              : newSet.add(index);
-                            return newSet;
-                          })
+                          const newSet = new Set(prev);
+                          newSet.has(index)
+                            ? newSet.delete(index)
+                            : newSet.add(index);
+                          return newSet;
+                        })
                         : onPressPhoto(uri)
                     }
                     onLongPress={() => handleDeletePhoto(index)}

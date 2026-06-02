@@ -1,11 +1,12 @@
 import * as ImagePicker from 'expo-image-picker';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { X } from 'lucide-react-native';
 import React, { useEffect } from 'react';
 import { Text, TouchableOpacity, View } from 'react-native';
 
 export default function CameraModal() {
   const router = useRouter();
+  const { id } = useLocalSearchParams();
 
   const jepretFoto = async () => {
     // 1. Minta izin kamera
@@ -31,7 +32,7 @@ export default function CameraModal() {
       // router.replace akan menutup modal dan mengirim parameter 'photoUri' kembali ke halaman absen
       router.replace({
         pathname: '/(tabs)', 
-        params: { photoUri: uriFoto }
+        params: { photoUri: uriFoto, idPhoto: id as string || null }
       });
     } else {
       // Jika user klik cancel/back di kamera, tutup modal dan kembali

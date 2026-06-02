@@ -60,9 +60,9 @@ export default function DialogBridge() {
     setFormValues((prev) => ({ ...prev, [key]: value }));
   };
 
-  const handleConfirmSubmit = async () => {
+  const handleConfirmSubmit = () => {
     if (dialogConfig.onConfirm) {
-      await dialogConfig.onConfirm(formValues);
+      dialogConfig.onConfirm(formValues);
     }
     closeDialog();
   };

@@ -86,8 +86,10 @@ export default function Login() {
           description: "Login successful!",
           action: "success",
         });
+
+        checkLoginStatus(); // Pastikan untuk memeriksa status login setelah mencoba masuk
         // Redirect ke halaman utama atau lakukan apa pun setelah login sukses
-        router.replace("/(tabs)");
+        // router.replace("/(tabs)");
       } catch (error) {
         const err = error as any;
         console.error("Login failed:", err.response || err.message);
@@ -152,14 +154,15 @@ export default function Login() {
               });
               // AsyncStorage.removeItem('user_token');
             } else {
-              router.replace("/(tabs)");
-
+              getCompanyData();
               if (intervalCompany) clearInterval(intervalCompany);
               setIntervalCompany(
                 setInterval(() => {
                   getCompanyData();
-                }, 60000) as unknown as NodeJS.Timeout, // Update company data every 60 seconds
+                }, 30000) as unknown as NodeJS.Timeout, // Update company data every 30 seconds
               );
+
+              router.replace("/(tabs)");
             }
           })
           .catch(async (error) => {
