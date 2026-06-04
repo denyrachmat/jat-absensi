@@ -1,13 +1,13 @@
 {
   "expo": {
     "name": "absensi-jat-new",
-    "slug": "absensi-jat-new",
+    "slug": "jat-hris",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "absensijatnew",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "ios": {
       "supportsTablet": true
     },
@@ -40,11 +40,19 @@
           }
         }
       ],
-      "expo-localization"
+      "expo-localization",
+      "expo-notifications"
     ],
     "experiments": {
       "typedRoutes": true,
-      "reactCompiler": true
-    }
+      // "reactCompiler": false
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "d9071abf-263d-4808-9841-3344ff72c4bd"
+      }
+    },
+    "owner": "deny22"
   }
 }

@@ -46,7 +46,9 @@ export default function Login() {
   }, []);
 
   React.useEffect(() => {
-    checkLoginStatus();
+    if (fcmToken) {
+      checkLoginStatus();
+    }
   }, [fcmToken]);
 
   const handleSubmit = async () => {
@@ -87,7 +89,9 @@ export default function Login() {
           action: "success",
         });
 
-        checkLoginStatus(); // Pastikan untuk memeriksa status login setelah mencoba masuk
+        if (fcmToken) {
+          checkLoginStatus(); // Pastikan untuk memeriksa status login setelah mencoba masuk
+        }
         // Redirect ke halaman utama atau lakukan apa pun setelah login sukses
         // router.replace("/(tabs)");
       } catch (error) {
@@ -122,8 +126,9 @@ export default function Login() {
   };
 
   const checkLoginStatus = async () => {
-    setIsLoading(true);
     try {
+      setIsInvalid(false);
+      setIsLoading(true);
       const token = await AsyncStorage.getItem("user_token");
       if (token) {
         api
@@ -154,7 +159,8 @@ export default function Login() {
               });
               // AsyncStorage.removeItem('user_token');
             } else {
-              getCompanyData();
+              await getCompanyData();
+
               if (intervalCompany) clearInterval(intervalCompany);
               setIntervalCompany(
                 setInterval(() => {
@@ -180,7 +186,6 @@ export default function Login() {
       }
     } catch (error) {
       console.error("Error checking login status:", error);
-      setIsLoading(false);
     } finally {
       console.log("Finished checking login status");
       setIsLoading(false);
@@ -247,13 +252,13 @@ export default function Login() {
             </FormControlError>
           </FormControl>
           <Button
-            className="w-fit self-end mt-4 bg-gray-500"
-            size="sm"
+            className="w-full mt-4 bg-blue-500 border border-white"
+            size="lg"
             variant="outline"
             onPress={handleSubmit}
           >
-            {isLoading && <ButtonSpinner color="gray" />}
-            <ButtonText>{isLoading ? "Loading..." : "Submit"}</ButtonText>
+            {isLoading && <ButtonSpinner color="white" />}
+            <ButtonText className="text-white">{isLoading ? "Loading..." : "Login"}</ButtonText>
           </Button>
         </LinearGradient>
       </VStack>

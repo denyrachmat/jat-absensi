@@ -97,10 +97,21 @@ export default function HomeScreen() {
     AsyncStorage.getItem("company").then((data) => {
       setCompany(JSON.parse(data || "{}"));
     });
+  }, []);
 
+  // ==========================================
+  // 🧹 CLEANUP EFFECT: Menghapus semua interval saat logout/unmount
+  // ==========================================
+  React.useEffect(() => {
     return () => {
-      if (intervalLocation.current) clearInterval(intervalLocation.current);
-      if (restIntervalRef.current) clearInterval(restIntervalRef.current);
+      if (intervalLocation.current) {
+        clearInterval(intervalLocation.current);
+        intervalLocation.current = null;
+      }
+      if (restIntervalRef.current) {
+        clearInterval(restIntervalRef.current);
+        restIntervalRef.current = null;
+      }
     };
   }, []);
 
@@ -203,11 +214,11 @@ export default function HomeScreen() {
   // ✨ EFFECT 5: SINKRONISASI OTOMATIS TIMER COOLDOWN DENGAN WAKTU RESMI PERUSAHAAN DARI SERVER
   // ==========================================
   React.useEffect(() => {
-    if (company) {
+    if (company?.start_clock_out) {
       console.log("Company start_clock_out:", company.start_clock_out);
       syncTimer(true);
     }
-  }, [JSON.stringify(company)]);
+  }, [company?.start_clock_out]);
 
   // Koordinat default (Jakarta) jika lokasi gagal dimuat
   const initialRegion = {
@@ -307,6 +318,7 @@ export default function HomeScreen() {
       );
 
       if (remaining_cooldown_seconds && remaining_cooldown_seconds.clock_in) {
+        console.log("Company start_clock_out:", company.start_clock_out);
         if (!company.start_clock_out) {
           $q.notif({
             title: "Data Perusahaan Tidak Lengkap",

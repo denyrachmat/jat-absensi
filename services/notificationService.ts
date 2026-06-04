@@ -37,11 +37,14 @@ export async function registerForPushNotificationsAsync() {
   }
 
   // 3. Ambil Token FCM via Expo Service
+  // 3. Ambil Token via Expo Service
   try {
-    // Catatan: Jika kamu menggunakan EAS Build, masukkan projectId kamu di sini
-    const tokenData = await Notifications.getDevicePushTokenAsync();
+    // Menggunakan getExpoPushTokenAsync agar menghasilkan ExponentPushToken[...]
+    const tokenData = await Notifications.getExpoPushTokenAsync({
+      projectId: 'd9071abf-263d-4808-9841-3344ff72c4bd' // 👈 Masukkan ID Project Expo kamu yang tadi muncul di terminal
+    });
     token = tokenData.data;
-    console.log('FCM Device Token:', token);
+    console.log('Expo Push Token:', token);
   } catch (error) {
     console.error('Gagal mengambil token:', error);
   }
