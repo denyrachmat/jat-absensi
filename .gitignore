@@ -41,3 +41,7 @@ app-example
 # generated native folders
 /ios
 /android
+
+# Firebase Service Account Secrets
+jat-hris-91d41b5dba20.json
+package-lock.json

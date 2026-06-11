@@ -7,11 +7,13 @@
     "icon": "./assets/images/icon.png",
     "scheme": "absensijatnew",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": false,
+    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true
     },
     "android": {
+      "compileSdkVersion": 36, // 👈 PAKSA KUNCI KE SDK 35
+      "targetSdkVersion": 36, // 👈 PAKSA KUNCI KE SDK 35
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",

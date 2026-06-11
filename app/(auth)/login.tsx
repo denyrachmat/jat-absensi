@@ -29,24 +29,36 @@ export default function Login() {
   const [isLoading, setIsLoading] = React.useState(false);
   const [fcmToken, setFcmToken] = React.useState("");
 
-  const [intervalCompany, setIntervalCompany] =
-    React.useState<NodeJS.Timeout | null>(null);
+  const intervalCompanyRef = React.useRef<NodeJS.Timeout | number | null>(null);
 
   const $q = useNotifyStore();
   const router = useRouter();
 
+  // 1. Hook Inisialisasi Pertama
   React.useEffect(() => {
     async function initNotification() {
-      const token = await registerForPushNotificationsAsync();
-      if (token) setFcmToken(token);
+      // 👈 BERIKAN JEDA: Biar UI login render dulu dengan stabil di Android 16
+      setTimeout(async () => {
+        try {
+          const token = await registerForPushNotificationsAsync();
+          if (token) setFcmToken(token);
+        } catch (e) {
+          console.error("Gagal mengambil token di Android 16:", e);
+        }
+      }, 1500); 
     }
-
-    if (intervalCompany) clearInterval(intervalCompany);
+    
     initNotification();
+
+    return () => {
+      if (intervalCompanyRef.current) clearInterval(intervalCompanyRef.current);
+    };
   }, []);
 
+  // 2. Hook Pemicu Cek Login setelah Token Siap
   React.useEffect(() => {
-    if (fcmToken) {
+    // 👈 KUNCI DI SINI: Jangan biarkan checkLoginStatus jalan kalau fcmToken masih kosong!
+    if (fcmToken !== "") {
       checkLoginStatus();
     }
   }, [fcmToken]);
@@ -90,7 +102,8 @@ export default function Login() {
         });
 
         if (fcmToken) {
-          checkLoginStatus(); // Pastikan untuk memeriksa status login setelah mencoba masuk
+          // checkLoginStatus(); // Pastikan untuk memeriksa status login setelah mencoba masuk
+          router.replace("/(tabs)");
         }
         // Redirect ke halaman utama atau lakukan apa pun setelah login sukses
         // router.replace("/(tabs)");
@@ -127,67 +140,51 @@ export default function Login() {
 
   const checkLoginStatus = async () => {
     try {
+      const token = await AsyncStorage.getItem("user_token");
+      if (!token) return; // Jika tidak ada token login, hentikan fungsi dengan aman
+
       setIsInvalid(false);
       setIsLoading(true);
-      const token = await AsyncStorage.getItem("user_token");
-      if (token) {
-        api
-          .post(
-            "/auth/check-login-expiring",
-            {
-              employee_id: await AsyncStorage.getItem("employee_id"),
-              device_id: await AsyncStorage.getItem("device_id"),
-            },
-            {
-              headers: {
-                Authorization: `Bearer ${token}`,
-              },
-            },
-          )
-          .then(async (response) => {
-            await AsyncStorage.setItem(
-              "employee",
-              JSON.stringify(response.data.data.employee),
-            );
 
-            if (response.data.data.is_expiring) {
-              $q.notif({
-                title: "Session Expiring",
-                description:
-                  "Your session is expiring soon. Please log in again.",
-                action: "warning",
-              });
-              // AsyncStorage.removeItem('user_token');
-            } else {
-              await getCompanyData();
+      const employeeId = await AsyncStorage.getItem("employee_id");
+      const deviceId = await AsyncStorage.getItem("device_id");
 
-              if (intervalCompany) clearInterval(intervalCompany);
-              setIntervalCompany(
-                setInterval(() => {
-                  getCompanyData();
-                }, 30000) as unknown as NodeJS.Timeout, // Update company data every 30 seconds
-              );
+      const response = await api.post(
+        "/auth/check-login-expiring",
+        { employee_id: employeeId, device_id: deviceId },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
 
-              router.replace("/(tabs)");
-            }
-          })
-          .catch(async (error) => {
-            console.error(
-              "Check login expiring failed:",
-              error.response || error.message,
-            );
-            if (error.response?.status === 401) {
-              await AsyncStorage.removeItem("user_token");
-              await AsyncStorage.removeItem("employee_id");
-              await AsyncStorage.removeItem("employee");
-              router.replace("/(auth)/login");
-            }
-          });
+      await AsyncStorage.setItem("employee", JSON.stringify(response.data.data.employee));
+
+      if (response.data.data.is_expiring) {
+        $q.notif({
+          title: "Session Expiring",
+          description: "Your session is expiring soon. Please log in again.",
+          action: "warning",
+        });
+      } else {
+        await getCompanyData();
+
+        // 👈 Manajemen timer menggunakan useRef (Aman dari Infinite Loop Re-render)
+        if (intervalCompanyRef.current) clearInterval(intervalCompanyRef.current);
+        intervalCompanyRef.current = setInterval(() => {
+          getCompanyData();
+        }, 30000);
+
+        // Berikan jeda waktu mikroskopis agar state stabil sebelum navigasi berjalan
+        setTimeout(() => {
+          router.replace("/(tabs)");
+        }, 100);
       }
     } catch (error) {
-      console.error("Error checking login status:", error);
+      const err = error as any;
+      console.error("Check login expiring failed:", err.response || err.message);
+      if (err.response?.status === 401) {
+        await AsyncStorage.multiRemove(["user_token", "employee_id", "employee"]);
+        router.replace("/(auth)/login");
+      }
     } finally {
-      console.log("Finished checking login status");
       setIsLoading(false);
     }
   };
