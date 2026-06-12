@@ -28,6 +28,7 @@ export default function Login() {
   const [Password, setPassword] = React.useState("");
   const [isLoading, setIsLoading] = React.useState(false);
   const [fcmToken, setFcmToken] = React.useState("");
+  const [notifReady, setNotifReady] = React.useState(false);
 
   const intervalCompanyRef = React.useRef<NodeJS.Timeout | number | null>(null);
 
@@ -37,15 +38,16 @@ export default function Login() {
   // 1. Hook Inisialisasi Pertama
   React.useEffect(() => {
     async function initNotification() {
-      // 👈 BERIKAN JEDA: Biar UI login render dulu dengan stabil di Android 16
       setTimeout(async () => {
         try {
           const token = await registerForPushNotificationsAsync();
           if (token) setFcmToken(token);
         } catch (e) {
           console.error("Gagal mengambil token di Android 16:", e);
+        } finally {
+          setNotifReady(true);
         }
-      }, 1500); 
+      }, 1500);
     }
     
     initNotification();
@@ -55,13 +57,12 @@ export default function Login() {
     };
   }, []);
 
-  // 2. Hook Pemicu Cek Login setelah Token Siap
+  // 2. Hook Pemicu Cek Login setelah proses notifikasi selesai (berhasil dapat token atau tidak)
   React.useEffect(() => {
-    // 👈 KUNCI DI SINI: Jangan biarkan checkLoginStatus jalan kalau fcmToken masih kosong!
-    if (fcmToken !== "") {
+    if (notifReady) {
       checkLoginStatus();
     }
-  }, [fcmToken]);
+  }, [notifReady]);
 
   const handleSubmit = async () => {
     if (Password.length < 6) {
@@ -101,12 +102,7 @@ export default function Login() {
           action: "success",
         });
 
-        if (fcmToken) {
-          // checkLoginStatus(); // Pastikan untuk memeriksa status login setelah mencoba masuk
-          router.replace("/(tabs)");
-        }
-        // Redirect ke halaman utama atau lakukan apa pun setelah login sukses
-        // router.replace("/(tabs)");
+        router.replace("/(tabs)");
       } catch (error) {
         const err = error as any;
         console.error("Login failed:", err.response || err.message);
