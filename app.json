@@ -12,8 +12,8 @@
       "supportsTablet": true
     },
     "android": {
-      "compileSdkVersion": 36, // 👈 PAKSA KUNCI KE SDK 35
-      "targetSdkVersion": 36, // 👈 PAKSA KUNCI KE SDK 35
+      "compileSdkVersion": 36,
+      "targetSdkVersion": 36,
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -46,8 +46,7 @@
       "expo-notifications"
     ],
     "experiments": {
-      "typedRoutes": true,
-      // "reactCompiler": false
+      "typedRoutes": true
     },
     "extra": {
       "router": {},
