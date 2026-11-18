@@ -16,8 +16,9 @@ module.exports = function (api) {
           },
         },
       ],
-      // Plugin react-native-worklets/plugin DIHAPUS karena bentrok
-      'react-native-reanimated/plugin', // 👈 Cukup gunakan ini saja, wajib paling bawah
+      // Reanimated 4 memakai plugin dari react-native-worklets, bukan
+      // react-native-reanimated/plugin. Wajib paling bawah.
+      'react-native-worklets/plugin',
     ],
   };
 };
