@@ -9,7 +9,14 @@
       "distribution": "internal"
     },
     "preview": {
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://hrmjos.idprofitsol.com/api/mobile/",
+        "EXPO_PUBLIC_STORAGE_URL": "https://hrmjos.idprofitsol.com/storage/file-attachment/file-attachment/"
+      },
+      "android": {
+        "buildType": "apk"
+      }
     },
     "production": {
       "autoIncrement": true
