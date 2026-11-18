@@ -1,0 +1,21 @@
+import { accuracyLevel, formatAccuracy, assessGeofence, distanceMeters } from '../services/geo.ts';
+import assert from 'node:assert';
+assert.equal(accuracyLevel(15), 'good');
+assert.equal(accuracyLevel(20), 'fair');
+assert.equal(accuracyLevel(100), 'fair');
+assert.equal(accuracyLevel(101), 'poor');
+assert.equal(accuracyLevel(null), null);
+assert.equal(formatAccuracy(14.6), 'Akurasi ±15m');
+assert.equal(formatAccuracy(NaN), null);
+// ~111m apart
+const d = distanceMeters({latitude:-6.2,longitude:106.8},{latitude:-6.201,longitude:106.8});
+assert.ok(d>110 && d<113, 'distance '+d);
+const setups=[{latitude:-6.2,longitude:106.8,radius:'50',gpc_location_name:'Kantor'}];
+const near=assessGeofence({latitude:-6.2,longitude:106.8,accuracy:15},setups);
+assert.equal(near.outsideRadius,false);
+assert.equal(near.accuracyExceedsRadius,false);
+const coarse=assessGeofence({latitude:-6.2,longitude:106.8,accuracy:500},setups);
+assert.equal(coarse.accuracyExceedsRadius,true);
+const far=assessGeofence({latitude:-6.201,longitude:106.8,accuracy:15},setups);
+assert.equal(far.outsideRadius,true);
+console.log('OK all geofence/accuracy assertions passed');

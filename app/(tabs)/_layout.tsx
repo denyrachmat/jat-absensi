@@ -8,7 +8,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { AlarmClock, Settings } from 'lucide-react-native';
+import { AlarmClock, CalendarDays, Settings } from 'lucide-react-native';
 
 
 export default function TabLayout() {
@@ -27,6 +27,13 @@ export default function TabLayout() {
           options={{
             title: 'Clock In/Out',
             tabBarIcon: ({ color }) => <Icon className="text-typography-600" as={AlarmClock} color={color} />,
+          }}
+        />
+        <Tabs.Screen
+          name="cuti"
+          options={{
+            title: 'Cuti',
+            tabBarIcon: ({ color }) => <Icon className="text-typography-600" as={CalendarDays} color={color} />,
           }}
         />
         <Tabs.Screen

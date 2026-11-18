@@ -39,6 +39,16 @@ import MapView, { Circle, Marker, UrlTile } from "react-native-maps";
 // import AsyncStorage from '@react-native-async-storage/async-storage';
 import { api } from "@/services/api";
 import {
+  ACCURACY_COLORS,
+  LOCATION_ISSUE_MESSAGES,
+  accuracyLevel,
+  assessGeofence,
+  formatAccuracy,
+  issueDetail,
+  type LocationIssueStatus,
+} from "@/services/geo";
+import { acquireLocationFix } from "@/services/location";
+import {
   clearTimer,
   getRemainingTimer,
   setTimerTarget,
@@ -74,6 +84,19 @@ export default function HomeScreen() {
   const [checkPhotoMode, setCheckPhotoMode] = useState(false);
   const [selectedPhotos, setSelectedPhotos] = useState<Set<number>>(new Set());
 
+  // Akurasi GPS vs radius lokasi absen terdekat (warning, bukan blokir)
+  const geofence = React.useMemo(() => {
+    if (!location) return null;
+    return assessGeofence(
+      {
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+        accuracy: location.coords.accuracy ?? null,
+      },
+      listSetupLocations,
+    );
+  }, [location, listSetupLocations]);
+
   const intervalLocation = React.useRef<ReturnType<typeof setInterval> | null>(null);
 
   const mapRef = React.useRef<MapView>(null);
@@ -85,7 +108,6 @@ export default function HomeScreen() {
   const $q = useNotifyStore();
 
   React.useEffect(() => {
-    getInitialLocation();
     getEmployeeData();
     fetchCurrentLocation();
     getListLocations();
@@ -248,61 +270,101 @@ export default function HomeScreen() {
     return tz;
   };
 
-  const fetchCurrentLocation = async (quiet = false) => {
-    if (!quiet) setLoadingLocation(true);
+  const showLocationIssueDialog = (
+    status: LocationIssueStatus,
+    detail?: "timeout" | null,
+  ) => {
+    const message = LOCATION_ISSUE_MESSAGES[status];
+    const extra = issueDetail(status, detail);
 
-    try {
-      // Menggunakan fungsi expo-location yang benar untuk cek saklar GPS HP
-      const isLocationServicesEnabled =
-        await Location.hasServicesEnabledAsync();
+    $q.dialog({
+      title: message.title,
+      description: extra ? `${message.description} ${extra}` : message.description,
+      confirmText: status === "denied" ? "OK" : "Coba Perbaiki",
+      cancelText: status === "denied" ? undefined : "Tutup",
+      onConfirm: () => {
+        if (status !== "denied") fetchCurrentLocation(true);
+      },
+    });
+  };
 
-      if (!isLocationServicesEnabled) {
-        $q.dialog({
-          title: "GPS Tidak Aktif",
-          description:
-            "Layanan lokasi (GPS) di perangkat kamu dinonaktifkan. Silakan aktifkan GPS kamu terlebih dahulu.",
-          confirmText: "OK",
-        });
-        setLoadingLocation(false);
-        return;
-      }
+  /** Satu jalur untuk semua permintaan titik GPS (dipakai mount, tombol, dan absen). */
+  const refreshLocationFix = async (silent = false) => {
+    if (!silent) setLoadingLocation(true);
 
-      // Minta izin permission foreground
-      let { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== "granted") {
-        $q.dialog({
-          title: "Akses Ditolak",
-          description:
-            "Aplikasi membutuhkan izin lokasi untuk melakukan presensi kehadiran.",
-          confirmText: "OK",
-        });
-        setLoadingLocation(false);
-        return;
-      }
+    const result = await acquireLocationFix();
+    if (silent) setLoadingLocation(false);
 
-      // Ambil koordinat GPS
-      let currentPosition = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
-
-      setLocation(currentPosition);
-
-      if (mapRef.current && currentPosition) {
-        mapRef.current.animateToRegion(
-          {
-            latitude: currentPosition.coords.latitude,
-            longitude: currentPosition.coords.longitude,
-            latitudeDelta: 0.003,
-            longitudeDelta: 0.003,
-          },
-          1000,
-        );
-      }
-    } catch (error) {
-      console.error("Error saat mendeteksi lokasi:", error);
-    } finally {
+    if (!result.ok) {
       setLoadingLocation(false);
+      return result;
     }
+
+    setLocation(result.position);
+
+    if (mapRef.current) {
+      mapRef.current.animateToRegion(
+        {
+          latitude: result.position.coords.latitude,
+          longitude: result.position.coords.longitude,
+          latitudeDelta: 0.003,
+          longitudeDelta: 0.003,
+        },
+        1000,
+      );
+    }
+
+    setLoadingLocation(false);
+    return result;
+  };
+
+  const fetchCurrentLocation = async (quiet = false) => {
+    // quiet hanya menahan spinner, pesan masalah tetap ditampilkan
+    const result = await refreshLocationFix(quiet);
+    if (!result.ok) {
+      showLocationIssueDialog(result.status, result.detail);
+    }
+  };
+
+  /**
+   * Dipakai clock in / clock out / istirahat: segarkan titik GPS, tampilkan
+   * diagnosis bila gagal, dan beri peringatan (bukan blokir) bila akurasi GPS
+   * lebih lebar dari radius absen.
+   */
+  const prepareAttendanceLocation = async () => {
+    const result = await refreshLocationFix(true);
+
+    if (!result.ok) {
+      showLocationIssueDialog(result.status, result.detail);
+      return null;
+    }
+
+    const assessment = assessGeofence(
+      {
+        latitude: result.position.coords.latitude,
+        longitude: result.position.coords.longitude,
+        accuracy: result.position.coords.accuracy ?? null,
+      },
+      listSetupLocations,
+    );
+
+    if (!assessment?.accuracyExceedsRadius) return result.position;
+
+    const proceed = await new Promise<boolean>((resolve) => {
+      $q.dialog({
+        title: "Akurasi GPS Tidak Cukup",
+        description: `Akurasi GPS kamu ±${Math.round(result.position.coords.accuracy ?? 0)}m, lebih lebar dari radius absen di ${assessment.name} (${assessment.radius} Meter). Posisi absen bisa tercatat di luar area. Tekan Coba Perbaiki untuk mengambil titik GPS yang lebih akurat.`,
+        confirmText: "Tetap Absen",
+        cancelText: "Coba Perbaiki",
+        onConfirm: () => resolve(true),
+        onCancel: () => {
+          fetchCurrentLocation(true);
+          resolve(false);
+        },
+      });
+    });
+
+    return proceed ? result.position : null;
   };
 
   const syncTimer = async (withPhoto = false) => {
@@ -489,26 +551,6 @@ export default function HomeScreen() {
     return restStartTimeOut;
   };
 
-  async function getInitialLocation() {
-    let { status } = await Location.requestForegroundPermissionsAsync();
-    if (status !== "granted") {
-      $q.notif({
-        title: "Izin Ditolak",
-        description: "Aplikasi butuh izin lokasi untuk melakukan Clock In.",
-        action: "error",
-      });
-      setLoadingLocation(false);
-      return;
-    }
-
-    // Ambil koordinat GPS dengan akurasi tinggi
-    let currentPosition = await Location.getCurrentPositionAsync({
-      accuracy: Location.Accuracy.Balanced,
-    });
-    setLocation(currentPosition);
-    setLoadingLocation(false);
-  }
-
   const handleDeletePhoto = (idx: number) => {
     if (cooldown > 0) {
       $q.notif({
@@ -636,6 +678,10 @@ export default function HomeScreen() {
       onConfirm: async (formValues) => {
         setLoading(true);
         try {
+          // Clock Out belum mengirim koordinat ke server, tetapi titik GPS
+          // tetap disegarkan supaya diagnosis/peringatan akurasi konsisten.
+          await prepareAttendanceLocation();
+
           const formData = new FormData();
           const localUri = typeof photoClockOut === "string"
             ? photoClockOut
@@ -714,20 +760,16 @@ export default function HomeScreen() {
       cancelText: "Batal",
       onConfirm: async () => {
         setLoading(true);
-        if (!location) {
-          $q.notif({
-            title: "Lokasi Tidak Terdeteksi",
-            description:
-              "Tidak dapat mendeteksi lokasi kamu. Pastikan GPS aktif dan coba lagi.",
-            action: "error",
-          });
+        const fix = await prepareAttendanceLocation();
+        if (!fix) {
+          setLoading(false);
           return;
         }
 
         try {
           const formData = new FormData();
-          formData.append("latitude", String(location.coords.latitude));
-          formData.append("longitude", String(location.coords.longitude));
+          formData.append("latitude", String(fix.coords.latitude));
+          formData.append("longitude", String(fix.coords.longitude));
           const localUri =
             typeof photo === "string"
               ? photo
@@ -800,19 +842,15 @@ export default function HomeScreen() {
       onConfirm: async () => {
         try {
           setLoading(true);
-          if (!location) {
-            $q.notif({
-              title: "Lokasi Tidak Terdeteksi",
-              description:
-                "Tidak dapat mendeteksi lokasi kamu. Pastikan GPS aktif dan coba lagi.",
-              action: "error",
-            });
+          const fix = await prepareAttendanceLocation();
+          if (!fix) {
+            setLoading(false);
             return;
           }
 
           const formData = new FormData();
-          formData.append("latitude", String(location.coords.latitude));
-          formData.append("longitude", String(location.coords.longitude));
+          formData.append("latitude", String(fix.coords.latitude));
+          formData.append("longitude", String(fix.coords.longitude));
 
           const response = await api.post("/attendances/clock-istirahat-out");
 
@@ -852,15 +890,9 @@ export default function HomeScreen() {
   };
 
   const executeClockInBackend = async () => {
-    if (!location) {
-      $q.notif({
-        title: "Lokasi Tidak Terdeteksi",
-        description:
-          "Tidak dapat mendeteksi lokasi kamu. Pastikan GPS aktif dan coba lagi.",
-        action: "error",
-      });
-
-      console.log("Check Location Failed: Location data is null", location);
+    const fix = await prepareAttendanceLocation();
+    if (!fix) {
+      console.log("Check Location Failed: no usable location fix");
       return false;
     } else {
       try {
@@ -879,8 +911,8 @@ export default function HomeScreen() {
 
         // Convert photo URI to blob for proper file upload
         const formData = new FormData();
-        formData.append("latitude", String(location.coords.latitude));
-        formData.append("longitude", String(location.coords.longitude));
+        formData.append("latitude", String(fix.coords.latitude));
+        formData.append("longitude", String(fix.coords.longitude));
         const localUri =
           typeof photo === "string"
             ? photo
@@ -1114,6 +1146,40 @@ export default function HomeScreen() {
             </VStack>
           </HStack>
         </VStack>
+      </View>
+
+      {/* Akurasi GPS: warna hijau <20m, amber 20-100m, merah >100m */}
+      <View style={styles.locationStatusContainer}>
+        <HStack space="sm" className="items-center">
+          <Text
+            size="xs"
+            className="font-bold"
+            style={{ color: ACCURACY_COLORS[accuracyLevel(location?.coords.accuracy) ?? "poor"] }}
+          >
+            {formatAccuracy(location?.coords.accuracy) ?? "Akurasi belum tersedia"}
+          </Text>
+          <TouchableOpacity
+            onPress={() => fetchCurrentLocation(true)}
+            activeOpacity={0.7}
+            style={styles.retryChip}
+          >
+            <Text size="xs" className="text-blue-600 font-bold">
+              Coba Perbaiki
+            </Text>
+          </TouchableOpacity>
+        </HStack>
+        {geofence?.accuracyExceedsRadius && (
+          <Text size="xs" className="text-red-600 font-bold">
+            Akurasi GPS lebih lebar dari radius absen {geofence.name} (
+            {geofence.radius}m). Absen tetap bisa dilakukan.
+          </Text>
+        )}
+        {!geofence?.accuracyExceedsRadius && geofence?.outsideRadius && (
+          <Text size="xs" className="text-orange-600">
+            Posisi kamu {Math.round(geofence.distance)}m dari {geofence.name} (radius{" "}
+            {geofence.radius}m).
+          </Text>
+        )}
       </View>
 
       <Animated.View
@@ -1350,6 +1416,24 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "flex-start",
     gap: 8,
+  },
+  locationStatusContainer: {
+    position: "absolute",
+    top: 150, // di bawah kartu timer istirahat
+    left: 20,
+    right: 40,
+    backgroundColor: "rgba(255, 255, 255, 0.9)",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    zIndex: 10,
+    gap: 4,
+  },
+  retryChip: {
+    backgroundColor: "#E0EAFF",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 2,
   },
   myLocationButton: {
     position: "absolute",
